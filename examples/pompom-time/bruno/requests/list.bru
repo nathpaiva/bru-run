@@ -1,0 +1,38 @@
+meta {
+  name: list
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{base_url}}/rpc
+  body: json
+  auth: none
+}
+
+headers {
+  x-api-key: {{api_key}}
+}
+
+body:json {
+  {
+    "jsonrpc": "2.0",
+    "id": "1",
+    "method": "item.list",
+    "params": {
+      "data": {
+        "limit": 10
+      }
+    }
+  }
+}
+
+docs {
+  Lists items in the example store.
+
+  ## Payload
+  - `limit` (number) — max items to return
+
+  ## Response
+  - `result.items[]` — array of `{ id, name }`
+}
