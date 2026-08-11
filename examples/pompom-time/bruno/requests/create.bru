@@ -1,0 +1,38 @@
+meta {
+  name: create
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{base_url}}/rpc
+  body: json
+  auth: none
+}
+
+headers {
+  x-api-key: {{api_key}}
+}
+
+body:json {
+  {
+    "jsonrpc": "2.0",
+    "id": "1",
+    "method": "item.create",
+    "params": {
+      "data": {
+        "name": "example item"
+      }
+    }
+  }
+}
+
+docs {
+  Creates one item in the example store.
+
+  ## Payload
+  - `name` (string) — the item's display name
+
+  ## Response
+  - `result.item` — the created `{ id, name }`
+}
