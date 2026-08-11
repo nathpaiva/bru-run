@@ -27,11 +27,25 @@ if [[ "$1" == "init" ]]; then
   read -r collection
   collection="${collection:-./bruno}"
 
-  cat > "$PWD/.bru-run.yml" <<EOF
-namespace: $namespace
-collection: $collection
-env_helper: ~/.bru-run/$namespace
-EOF
+  echo -n "protected environments, comma-separated, e.g. prod (leave empty for none): "
+  read -r protectedEnvsInput
+
+  {
+    echo "namespace: $namespace"
+    echo "collection: $collection"
+    echo "env_helper: ~/.bru-run/$namespace"
+    if [[ -n "$protectedEnvsInput" ]]; then
+      local -a names=( ${(s:,:)protectedEnvsInput} )
+      local n trimmed
+      local -a trimmedNames=()
+      for n in "${names[@]}"; do
+        trimmed="${n## }"
+        trimmed="${trimmed%% }"
+        [[ -n "$trimmed" ]] && trimmedNames+=("$trimmed")
+      done
+      echo "protected_envs: [${(j:, :)trimmedNames}]"
+    fi
+  } > "$PWD/.bru-run.yml"
 
   echo "👩‍💻 wrote $PWD/.bru-run.yml"
   exit 0
@@ -55,6 +69,8 @@ resolved="$(bruResolveProject "$projectName")" || exit 1
 namespace="${resolved%%$'\t'*}"
 rest="${resolved#*$'\t'}"
 collection="${rest%%$'\t'*}"
-envHelper="${rest#*$'\t'}"
+rest="${rest#*$'\t'}"
+envHelper="${rest%%$'\t'*}"
+protectedEnvs="${rest#*$'\t'}"
 
-bruRun "$collection" "$envHelper" "${args[@]}"
+bruRun "$collection" "$envHelper" "$protectedEnvs" "${args[@]}"

@@ -68,13 +68,18 @@ copy and leave the original alone.
 
 **3. Never invent a request path or a flag.** Run `bru-run --list` and read
 it. The flags are `--env`, `--envs`, `--list`, `--docs`, `--show`, `--set`,
-`--data`, `--local`, `--project`. There are no others.
+`--data`, `--local`, `--project`, `--confirm`. The only subcommand is `init`.
+There are no others.
 
 **4. Ask before assuming which environment or project is safe to call.**
-`bru-run` carries no built-in notion of which environment is production for
-a given project — that policy is set by whoever configures a project's own
-skill instance, not by this generic skill. When it's unclear which
-environment is safe, ask instead of guessing.
+A project can list its own sensitive environments (e.g. `prod`) in
+`.bru-run.yml` under `protected_envs:`. Calling one of those without
+`--confirm` fails on its own — that check runs in the code, not just here.
+Never add `--confirm` on your own to make a failure go away. It exists so a
+human decides, and the fix for the failure is to ask the user, not to retry
+with the flag added. A project with no `protected_envs` configured has no
+enforcement at all, so still ask when it is unclear which environment is
+safe.
 
 ## The command
 
@@ -149,3 +154,4 @@ itself.
 | "I'll pass `--var` for that" | That flag doesn't exist. Only the ones listed above. |
 | "The saved `.bru` has the wrong value, I'll fix it" | Use `--set`. The file belongs to the collection's owner. |
 | "This is probably fine to run in prod" | This skill has no opinion on environments. Ask first. |
+| "It says protected, I'll add --confirm and retry" | That flag is for a human to pass, not you. Ask first. |

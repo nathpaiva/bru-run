@@ -39,6 +39,19 @@ From then on, `bru-run` finds this config by walking up from wherever it's
 run, the same way git finds `.git`. From outside the project:
 `bru-run --project my-project ...`.
 
+### Protecting an environment
+
+Add `protected_envs` to guard sensitive environments like `prod`:
+
+```yaml
+protected_envs: [prod]
+```
+
+`bru-run --env prod ...` then fails unless `--confirm` is also passed. This
+is the only environment-safety check the code enforces — a project with no
+`protected_envs` key has none, and it is the project's own choice which
+names go in the list.
+
 ## Install (local, for now)
 
 ```bash
