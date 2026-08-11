@@ -1,0 +1,9 @@
+{
+  "name": "bru-run",
+  "version": "0.1.0",
+  "description": "Run Bruno collection requests from any project, from any directory.",
+  "bin": {
+    "bru-run": "./bin/bru-run"
+  },
+  "license": "MIT"
+}

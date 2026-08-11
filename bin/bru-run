@@ -1,0 +1,76 @@
+#!/usr/bin/env zsh
+#
+# bru-run — run Bruno collection requests from any project.
+#
+# See lib/bru-run.zsh for the full flag reference. This entrypoint only
+# resolves which project to run against, then hands off to bruRun.
+
+set -e
+SCRIPT_DIR="${0:A:h}"
+source "$SCRIPT_DIR/../lib/bru-run.zsh"
+
+# `bru-run init` — write a .bru-run.yml in the current directory.
+if [[ "$1" == "init" ]]; then
+  if [[ -f "$PWD/.bru-run.yml" ]]; then
+    echo "👩‍💻 .bru-run.yml already exists here" >&2
+    exit 1
+  fi
+
+  echo -n "namespace: "
+  read -r namespace
+  if [[ -z "$namespace" ]]; then
+    echo "👩‍💻 namespace can't be empty" >&2
+    exit 1
+  fi
+
+  echo -n "collection path (relative to this directory) [./bruno]: "
+  read -r collection
+  collection="${collection:-./bruno}"
+
+  echo -n "protected environments, comma-separated, e.g. prod (leave empty for none): "
+  read -r protectedEnvsInput
+
+  {
+    echo "namespace: $namespace"
+    echo "collection: $collection"
+    echo "env_helper: ~/.bru-run/$namespace"
+    if [[ -n "$protectedEnvsInput" ]]; then
+      local -a names=( ${(s:,:)protectedEnvsInput} )
+      local n trimmed
+      local -a trimmedNames=()
+      for n in "${names[@]}"; do
+        trimmed="${n## }"
+        trimmed="${trimmed%% }"
+        [[ -n "$trimmed" ]] && trimmedNames+=("$trimmed")
+      done
+      echo "protected_envs: [${(j:, :)trimmedNames}]"
+    fi
+  } > "$PWD/.bru-run.yml"
+
+  echo "👩‍💻 wrote $PWD/.bru-run.yml"
+  exit 0
+fi
+
+# --project <name> takes it out of the positional args before resolution;
+# everything else passes straight through to bruRun.
+projectName=""
+args=()
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--project" ]]; then
+    projectName="$2"
+    shift 2
+  else
+    args+=("$1")
+    shift
+  fi
+done
+
+resolved="$(bruResolveProject "$projectName")" || exit 1
+namespace="${resolved%%$'\t'*}"
+rest="${resolved#*$'\t'}"
+collection="${rest%%$'\t'*}"
+rest="${rest#*$'\t'}"
+envHelper="${rest%%$'\t'*}"
+protectedEnvs="${rest#*$'\t'}"
+
+bruRun "$collection" "$envHelper" "$protectedEnvs" "${args[@]}"
