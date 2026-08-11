@@ -3,6 +3,18 @@
 Generic shell CLI for running Bruno collections from any project — not tied
 to one API.
 
+## Requirements
+
+- **zsh** — the CLI is written in zsh, not plain bash. macOS has it by
+  default since Catalina; on Linux, install it with your package manager
+  (e.g. `apt install zsh`, `dnf install zsh`). Removing this dependency is
+  tracked as a follow-up: [issue #4](https://github.com/nathpaiva/bru-run/issues/4).
+- [`jq`](https://jqlang.org/) — used to patch and read JSON payloads.
+- [`fzf`](https://github.com/junegunn/fzf) — optional, only needed for the
+  interactive request/environment pickers.
+- The [Bruno CLI](https://www.usebruno.com/) (`bru`) — runs the actual
+  request.
+
 ## What it does
 
 Point it at a project's Bruno collection with a `.bru-run.yml` file, and run
