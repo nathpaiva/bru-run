@@ -811,10 +811,22 @@ function bruRun() {
   # below read the response. Each `bru run` is a fresh process, so bru.setVar()
   # dies with it and bru.setEnvVar() is in-memory only (as of CLI 3.5.2) — the
   # chained values have to be written back to the env file by us.
-  local out exitCode
-  out="$(mktemp -t bru-response).json"
-  ( cd "$collection" && bru run "$request" "${bruArgs[@]}" --output "$out" )
-  exitCode=$?
+  #
+  # mktemp itself creates the bare file (no .json suffix) on disk; bru writes
+  # its output to $out (the suffixed name) instead, so the bare one is dead
+  # weight from the start and gets removed right away.
+  local outBase out exitCode
+  outBase="$(mktemp -t bru-response)"
+  out="${outBase}.json"
+  rm -f "$outBase"
+
+  # `|| exitCode=$?` instead of a bare statement: bin/bru-run runs under
+  # set -e, and a bare failing command here would abort the function before
+  # the cleanup below (rm -f "$out" / the tmp request file) ever runs, so a
+  # failed run — a network error, a bad request, anything — would leave temp
+  # files behind every time.
+  exitCode=0
+  ( cd "$collection" && bru run "$request" "${bruArgs[@]}" --output "$out" ) || exitCode=$?
 
   if [[ -s "$out" ]] && command -v jq >/dev/null 2>&1; then
     [[ -n "$envFile" && -f "$envFile" ]] && \
