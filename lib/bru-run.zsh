@@ -121,18 +121,49 @@ function bruReadProtectedEnvs() {
   print -r -- "${(j:,:)trimmedNames}"
 }
 
-# Load the keys out of a .bru-run.yml, resolving `collection` and
-# `env_helper` relative to the config file's own directory, and expanding a
-# leading ~ in env_helper.
+# Read the optional `chained_vars: <path>` key — a pointer to the file that
+# holds this project's {envVarName -> jq expression} map. Prints the resolved
+# absolute path, or nothing when the key is absent.
+#
+# It is a pointer instead of an inline block on purpose. .bru-run.yml is read
+# with grep and has no YAML parser behind it, so every key has to stay a
+# single shallow line; a nested map would need indentation-aware parsing. The
+# expressions are long enough that a one-line flow list is not readable
+# either.
+function bruReadChainedVarsFile() {
+  local configFile="$1"
+  local base="${configFile:h}"
+  local raw
+  raw="$(bruReadConfigKey "$configFile" chained_vars)"
+  [[ -z "$raw" ]] && return 0
+
+  [[ "$raw" == "~"* ]] && raw="${raw/#\~/$HOME}"
+  [[ "$raw" != /* ]] && raw="$base/$raw"
+
+  # A missing file is worth saying out loud but is not fatal: chaining is an
+  # optional convenience, and killing the run would block --list and --docs
+  # too, which never touch the map at all.
+  if [[ ! -f "$raw" ]]; then
+    echo "👩‍💻 chained_vars file not found: $raw" >&2
+    return 0
+  fi
+
+  print -r -- "$raw"
+}
+
+# Load the keys out of a .bru-run.yml, resolving `collection`,
+# `env_helper` and `chained_vars` relative to the config file's own
+# directory, and expanding a leading ~ in env_helper.
 function bruLoadProjectConfig() {
   local configFile="$1"
   local base="${configFile:h}"
 
-  local namespace collection envHelper protectedEnvs
+  local namespace collection envHelper protectedEnvs chainedVarsFile
   namespace="$(bruReadConfigKey "$configFile" namespace)"
   collection="$(bruReadConfigKey "$configFile" collection)"
   envHelper="$(bruReadConfigKey "$configFile" env_helper)"
   protectedEnvs="$(bruReadProtectedEnvs "$configFile")"
+  chainedVarsFile="$(bruReadChainedVarsFile "$configFile")"
 
   [[ -z "$namespace" || -z "$collection" ]] && {
     echo "👩‍💻 $configFile is missing namespace or collection" >&2
@@ -143,7 +174,7 @@ function bruLoadProjectConfig() {
   [[ "$envHelper" == "~"* ]] && envHelper="${envHelper/#\~/$HOME}"
   [[ -z "$envHelper" ]] && envHelper="$BRU_RUN_SECRETS_ROOT/$namespace"
 
-  print -r -- "$namespace"$'\t'"$collection"$'\t'"$envHelper"$'\t'"$protectedEnvs"
+  print -r -- "$namespace"$'\t'"$collection"$'\t'"$envHelper"$'\t'"$protectedEnvs"$'\t'"$chainedVarsFile"
 }
 
 # Write/update one entry in the global registry so `--project <name>` can
@@ -388,14 +419,68 @@ function bruWithEnvLock() {
   return $rc
 }
 
+# Read a chained-vars map file into an associative array. One pair per line:
+# the variable name, a run of whitespace, then the jq expression. Blank lines
+# and `#` comments are skipped. The expression keeps every space inside it, so
+# only the first whitespace run counts as the separator.
+function bruLoadChainedVarsFile() {
+  local mapFile="$1"
+  local -A map=()
+  local line key expr
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "${line//[[:space:]]/}" ]] && continue
+    [[ "${line#"${line%%[![:space:]]*}"}" == '#'* ]] && continue
+
+    key="${line%%[[:space:]]*}"
+    expr="${line#"$key"}"
+    expr="${expr#"${expr%%[![:space:]]*}"}"
+    [[ -z "$key" || -z "$expr" ]] && continue
+
+    map[$key]="$expr"
+  done < "$mapFile"
+
+  # Printed rather than returned: zsh cannot hand an associative array back
+  # out of a function, which is the same limit that broke BRU_RUN_CHAINED_VARS
+  # across the process boundary in the first place.
+  local k
+  for k in "${(@k)map}"; do
+    print -r -- "$k"$'\t'"${map[$k]}"
+  done
+}
+
 # Pull chained variables out of a --output json and persist them to the env
-# file. A project supplies its own map of {envVarName: jq expression} via
-# BRU_RUN_CHAINED_VARS (an associative array) before calling bru-run — with
-# no map set, this is a no-op. Chaining is inherently specific to one API's
-# response shapes, so bru-run carries no built-in map of its own.
+# file. Chaining is specific to one API's response shapes, so bru-run carries
+# no built-in map of its own — a project supplies {envVarName: jq expression}
+# in one of two ways:
+#
+#   1. `chained_vars: <path>` in .bru-run.yml, which bin/bru-run resolves and
+#      passes in as $3. This is the path the CLI uses.
+#   2. BRU_RUN_CHAINED_VARS, an associative array set in the calling shell.
+#      This only works when lib/bru-run.zsh is sourced into that same shell:
+#      zsh cannot export an associative array, so it never reaches bin/bru-run
+#      running as its own process. Kept for callers that source the lib.
+#
+# The file wins when both are present. With neither, this is a no-op.
 function bruCaptureVars() {
-  local out="$1" envFile="$2"
-  (( ${#BRU_RUN_CHAINED_VARS[@]} == 0 )) && return 0
+  local out="$1" envFile="$2" mapFile="$3"
+
+  local -A map=()
+  local pair
+  if [[ -n "$mapFile" && -f "$mapFile" ]]; then
+    for pair in ${(f)"$(bruLoadChainedVarsFile "$mapFile")"}; do
+      [[ -z "$pair" ]] && continue
+      map[${pair%%$'\t'*}]="${pair#*$'\t'}"
+    done
+  else
+    local k
+    for k in "${(@k)BRU_RUN_CHAINED_VARS}"; do
+      map[$k]="${BRU_RUN_CHAINED_VARS[$k]}"
+    done
+  fi
+
+  (( ${#map[@]} == 0 )) && return 0
 
   local body key expr value
   local -a saved=()
@@ -403,12 +488,14 @@ function bruCaptureVars() {
   body="$(jq -c '.[0].results[-1].response.data' "$out" 2>/dev/null)"
   [[ -z "$body" || "$body" == "null" ]] && return 0
 
-  for key expr in "${(kv)BRU_RUN_CHAINED_VARS[@]}"; do
+  for key expr in "${(kv)map[@]}"; do
     value="$(jq -r "$expr // empty" <<< "$body" 2>/dev/null | head -1)"
     [[ -z "$value" || "$value" == "null" ]] && continue
     bruSetEnvVar "$envFile" "$key" "$value" && saved+=("$key")
   done
 
+  # Names only. A captured value is a secret as often as not, and this line
+  # goes straight into a terminal and into an agent's transcript.
   (( ${#saved[@]} )) && echo "👩‍💻 saved to env '${envFile:t:r}': ${(j:, :)saved}"
   return 0
 }
@@ -611,8 +698,8 @@ function bruResolveRequest() {
 # ---------------------------------------------------------------------------
 
 function bruRun() {
-  local collection="$1" envHelper="$2" protectedEnvsCsv="$3"
-  shift 3
+  local collection="$1" envHelper="$2" protectedEnvsCsv="$3" chainedVarsFile="$4"
+  shift 4
 
   if [[ ! -f "$collection/bruno.json" ]]; then
     echo "👩‍💻 no bruno.json in $collection" >&2
@@ -830,7 +917,7 @@ function bruRun() {
 
   if [[ -s "$out" ]] && command -v jq >/dev/null 2>&1; then
     [[ -n "$envFile" && -f "$envFile" ]] && \
-      bruWithEnvLock "$envFile" bruCaptureVars "$out" "$envFile"
+      bruWithEnvLock "$envFile" bruCaptureVars "$out" "$envFile" "$chainedVarsFile"
 
     if (( show )); then
       echo

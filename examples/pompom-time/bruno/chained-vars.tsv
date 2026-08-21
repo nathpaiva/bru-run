@@ -1,0 +1,11 @@
+# Variables one request produces and the next one consumes.
+#
+# Format: the variable name, a run of whitespace, then a jq expression run
+# against the response body. Blank lines and # comments are ignored.
+#
+# Point .bru-run.yml at this file with `chained_vars: ./bruno/chained-vars.tsv`.
+# After a run, every expression that matches is written into the env file, so
+# the next request — a separate `bru run` process — can still see the value.
+
+itemId	.result.item.id // .result.items[0].id
+itemName	.result.item.name // .result.items[0].name
