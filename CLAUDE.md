@@ -55,6 +55,7 @@ namespace: my-project
 collection: ./bruno              # path to the Bruno collection
 env_helper: ~/.bru-run/my-project    # where this project's secrets live
 protected_envs: [prod]           # optional — see below
+chained_vars: ./bruno/chained-vars.tsv   # optional — see below
 ```
 
 - `namespace` — used to look this project up from anywhere via
@@ -71,9 +72,27 @@ protected_envs: [prod]           # optional — see below
   in `SKILL.md` that an agent has to choose to follow. Don't treat that
   prose as equivalent to a real gate.
 
+- `chained_vars` — a path to the file holding this project's
+  `{envVarName -> jq expression}` map, one `name<whitespace>expression` pair
+  per line. Resolved relative to the config file. It is a pointer instead of
+  an inline map because of the rule below; the expressions are long enough
+  that a one-line flow-list would be unreadable. A missing file warns and
+  carries on rather than failing the run — chaining is optional, and killing
+  the run would take `--list` and `--docs` down with it.
+
 If you're adding a new top-level config key, keep it a single-line, shallow
 value (or a one-line flow-list, like `protected_envs`) — the whole config
-format depends on not needing a real YAML parser.
+format depends on not needing a real YAML parser. When a key needs more
+structure than that, point at a sidecar file the way `chained_vars` does.
+
+## Associative arrays never cross a process boundary
+
+`BRU_RUN_CHAINED_VARS` was originally the only way to supply a chaining map,
+and it silently did nothing: `bin/bru-run` is its own process and zsh cannot
+export an associative array (`typeset -gAx` does not help). It still works
+when `lib/bru-run.zsh` is sourced into the calling shell, and it is kept for
+that case, but anything the CLI has to see belongs in `.bru-run.yml` or a
+file it points at. See [issue #10](https://github.com/nathpaiva/bru-run/issues/10).
 
 ## Secrets never touch the repo
 

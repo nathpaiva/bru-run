@@ -12,7 +12,7 @@ bottom is:
 
 ```zsh
 function bru-api() {
-  bruRun "$BRUNO_COLLECTION_APP_API" app-api "$@"
+  bruRun "$SOME_COLLECTION_PATH" some-namespace "$@"
 }
 ```
 
@@ -24,8 +24,7 @@ written for.
 
 - Generic CLI (`bru-run`), shell-based, no dependency on Claude.
 - A new, generic Claude skill, in this same repo, separate from the existing
-  project-specific `nabreeze-api-bru-app-api` skill (which stays in dotfiles,
-  untouched).
+  project-specific skill (which stays in dotfiles, untouched).
 - Config per project, secrets always outside any versioned repo.
 - Tested against a fake collection from the `pompom-time` project.
 - Repo stays private until we've verified nothing project-specific or
@@ -35,8 +34,8 @@ written for.
 
 - Migrating `bru-api` itself off dotfiles yet — that's a follow-up once
   `bru-run` is proven.
-- The paused `nabreeze-api-bru-app-api` skill investigation (session ID never
-  visible) — unrelated work, on a different agent, not touched here.
+- The paused project-specific skill investigation (session ID never visible)
+  — unrelated work, on a different agent, not touched here.
 
 ## Design
 
@@ -93,7 +92,8 @@ setup step for a new project.
 
 New skill, lives in this repo (not dotfiles), teaches an agent to use
 `bru-run` against whatever `.bru-run.yml` is in scope. It inherits the
-**universal** safety rules already proven in `nabreeze-api-bru-app-api`:
+**universal** safety rules already proven in the project-specific skill it
+came from:
 
 - Never print a secret value.
 - Never edit the saved `.bru` file — use `--set`/`--data` for overrides.
@@ -101,9 +101,9 @@ New skill, lives in this repo (not dotfiles), teaches an agent to use
   collection.
 - Never invent a request path or a flag.
 
-It does **not** inherit domain rules that only make sense for the app-api
+It does **not** inherit domain rules that only make sense for the one API
 this was extracted from, most notably "never run against prod without the
-literal word prod" — that stays specific to `nabreeze-api-bru-app-api`. A
+literal word prod" — that stays in that project's own skill. A
 generic skill can't know what "production" means for an arbitrary project;
 environment-gating policy is left to whoever configures a given project's
 skill instance, out of scope for this first version.

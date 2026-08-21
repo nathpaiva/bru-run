@@ -64,6 +64,30 @@ is the only environment-safety check the code enforces — a project with no
 `protected_envs` key has none, and it is the project's own choice which
 names go in the list.
 
+### Chaining values between requests
+
+Every `bru run` is its own process, so a value one request returns is gone
+before the next one starts. Point `chained_vars` at a file and `bru-run`
+writes those values back into the env file, where the next request can read
+them:
+
+```yaml
+chained_vars: ./bruno/chained-vars.tsv
+```
+
+The file holds one pair per line — the variable name, a run of whitespace,
+then a jq expression run against the response body. Blank lines and `#`
+comments are ignored:
+
+```
+itemId	.result.item.id // .result.items[0].id
+itemName	.result.item.name
+```
+
+After each run, `bru-run` prints the names it saved, never the values. What
+the expressions match is specific to one API's response shapes, so bru-run
+ships no map of its own — see `examples/pompom-time/bruno/chained-vars.tsv`.
+
 ## Install (local, for now)
 
 ```bash

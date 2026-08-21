@@ -2,3 +2,4 @@ namespace: pompom-time
 collection: ./bruno
 env_helper: ~/.bru-run/pompom-time
 protected_envs: [prod]
+chained_vars: ./bruno/chained-vars.tsv
