@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # bru-run engine
 #
 # `bru` only runs from a collection root, so each helper cd's there in a
@@ -65,26 +66,27 @@ export BRU_RUN_SECRETS_ROOT="${BRU_RUN_SECRETS_ROOT:-$HOME/.bru-run}"
 # or awk pattern as a literal match. namespace comes from --project or a
 # project's own .bru-run.yml — both arbitrary strings, so `.` in a namespace
 # like "foo.bar" must not act as "any char" and match "fooxbar" instead.
-function bruEscapeRegex() {
+bruEscapeRegex() {
   local s="$1"
-  local -a metaChars=(\\ '^' '$' '.' '[' ']' '|' '(' ')' '*' '+' '?' '{' '}')
+  local metaChars=('\' '^' '$' '.' '[' ']' '|' '(' ')' '*' '+' '?' '{' '}')
   local c
   for c in "${metaChars[@]}"; do
-    s="${s//$c/\\$c}"
+    s="${s//"$c"/\\$c}"
   done
-  print -r -- "$s"
+  printf '%s\n' "$s"
 }
 
 # Walk up from $PWD looking for .bru-run.yml, the way git finds .git. Prints
 # the absolute path to the file it finds, or nothing if it hits /.
-function bruFindProjectConfig() {
+bruFindProjectConfig() {
   local dir="$PWD"
   while [[ "$dir" != "/" ]]; do
     if [[ -f "$dir/.bru-run.yml" ]]; then
-      print -r -- "$dir/.bru-run.yml"
+      printf '%s\n' "$dir/.bru-run.yml"
       return 0
     fi
-    dir="${dir:h}"
+    dir="${dir%/*}"
+    [[ -z "$dir" ]] && dir="/"
   done
   return 1
 }
@@ -92,7 +94,7 @@ function bruFindProjectConfig() {
 # Read one flat top-level key out of a .bru-run.yml. The file's shape is
 # fixed and shallow (namespace / collection / env_helper), so a small grep
 # does the job without adding a YAML parser dependency.
-function bruReadConfigKey() {
+bruReadConfigKey() {
   local configFile="$1" key="$2"
   grep -m1 -E "^${key}:" "$configFile" | sed -E "s/^${key}:[[:space:]]*//" | sed -E "s/[[:space:]]+#.*$//"
 }
@@ -100,25 +102,26 @@ function bruReadConfigKey() {
 # Read the optional `protected_envs: [a, b]` key — a one-line flow list of
 # environment names that need --confirm before bruRun will call them. Prints
 # a comma-separated list, or nothing if the key is absent.
-function bruReadProtectedEnvs() {
+bruReadProtectedEnvs() {
   local configFile="$1"
   local raw
   raw="$(bruReadConfigKey "$configFile" protected_envs)"
   [[ -z "$raw" ]] && return 0
 
-  # strip [ ], split on commas, trim spaces around each name
   raw="${raw#\[}"
   raw="${raw%\]}"
-  local -a names
-  names=( ${(s:,:)raw} )
+  local names
+  IFS=',' read -ra names <<< "$raw"
   local n trimmed
-  local -a trimmedNames=()
+  local trimmedNames=()
   for n in "${names[@]}"; do
     trimmed="${n## }"
     trimmed="${trimmed%% }"
     [[ -n "$trimmed" ]] && trimmedNames+=("$trimmed")
   done
-  print -r -- "${(j:,:)trimmedNames}"
+  local joined
+  joined="$(IFS=','; echo "${trimmedNames[*]}")"
+  printf '%s\n' "$joined"
 }
 
 # Read the optional `chained_vars: <path>` key — a pointer to the file that
@@ -130,9 +133,9 @@ function bruReadProtectedEnvs() {
 # single shallow line; a nested map would need indentation-aware parsing. The
 # expressions are long enough that a one-line flow list is not readable
 # either.
-function bruReadChainedVarsFile() {
+bruReadChainedVarsFile() {
   local configFile="$1"
-  local base="${configFile:h}"
+  local base="${configFile%/*}"
   local raw
   raw="$(bruReadConfigKey "$configFile" chained_vars)"
   [[ -z "$raw" ]] && return 0
@@ -140,23 +143,20 @@ function bruReadChainedVarsFile() {
   [[ "$raw" == "~"* ]] && raw="${raw/#\~/$HOME}"
   [[ "$raw" != /* ]] && raw="$base/$raw"
 
-  # A missing file is worth saying out loud but is not fatal: chaining is an
-  # optional convenience, and killing the run would block --list and --docs
-  # too, which never touch the map at all.
   if [[ ! -f "$raw" ]]; then
     echo "👩‍💻 chained_vars file not found: $raw" >&2
     return 0
   fi
 
-  print -r -- "$raw"
+  printf '%s\n' "$raw"
 }
 
 # Load the keys out of a .bru-run.yml, resolving `collection`,
 # `env_helper` and `chained_vars` relative to the config file's own
 # directory, and expanding a leading ~ in env_helper.
-function bruLoadProjectConfig() {
+bruLoadProjectConfig() {
   local configFile="$1"
-  local base="${configFile:h}"
+  local base="${configFile%/*}"
 
   local namespace collection envHelper protectedEnvs chainedVarsFile
   namespace="$(bruReadConfigKey "$configFile" namespace)"
@@ -165,23 +165,23 @@ function bruLoadProjectConfig() {
   protectedEnvs="$(bruReadProtectedEnvs "$configFile")"
   chainedVarsFile="$(bruReadChainedVarsFile "$configFile")"
 
-  [[ -z "$namespace" || -z "$collection" ]] && {
+  if [[ -z "$namespace" || -z "$collection" ]]; then
     echo "👩‍💻 $configFile is missing namespace or collection" >&2
     return 1
-  }
+  fi
 
   [[ "$collection" != /* ]] && collection="$base/$collection"
   [[ "$envHelper" == "~"* ]] && envHelper="${envHelper/#\~/$HOME}"
   [[ -z "$envHelper" ]] && envHelper="$BRU_RUN_SECRETS_ROOT/$namespace"
 
-  print -r -- "$namespace"$'\t'"$collection"$'\t'"$envHelper"$'\t'"$protectedEnvs"$'\t'"$chainedVarsFile"
+  printf '%s\n' "$namespace"$'\t'"$collection"$'\t'"$envHelper"$'\t'"$protectedEnvs"$'\t'"$chainedVarsFile"
 }
 
 # The tab-delimited field order bruLoadProjectConfig/bruResolveProject print
 # in — the single source of truth both bruFieldsOf (below) and any future
-# reader has to match. Adding a field means adding it here, in the print -r
+# reader has to match. Adding a field means adding it here, in the printf
 # above, and nowhere else.
-typeset -g -ra bruResolvedFields=(namespace collection envHelper protectedEnvs chainedVarsFile)
+bruResolvedFields=(namespace collection envHelper protectedEnvs chainedVarsFile)
 
 # Split a bruResolveProject/bruLoadProjectConfig tab-delimited result into
 # its named fields, instead of every caller hand-rolling %%/# slicing (which
@@ -192,15 +192,15 @@ typeset -g -ra bruResolvedFields=(namespace collection envHelper protectedEnvs c
 #
 # Usage: local namespace collection envHelper protectedEnvs chainedVarsFile
 #        bruFieldsOf "$resolved"
-function bruFieldsOf() {
+bruFieldsOf() {
   local resolved="$1"
-  local -a values
-  values=( "${(@ps:\t:)resolved}" )
+  local values
+  IFS=$'\t' read -ra values <<< "$resolved"
 
   local i field
-  for i in {1..${#bruResolvedFields[@]}}; do
+  for i in "${!bruResolvedFields[@]}"; do
     field="${bruResolvedFields[$i]}"
-    typeset -g "$field=${values[$i]}"
+    printf -v "$field" '%s' "${values[$i]}"
   done
 }
 
@@ -215,16 +215,13 @@ function bruFieldsOf() {
 # Skips the lock and the write entirely when the entry already matches —
 # without this, every --list/--docs call (read-only, nothing changed) still
 # takes the lock and rewrites the registry file on every single invocation.
-function bruRegisterProject() {
+bruRegisterProject() {
   local namespace="$1" configFile="$2"
   mkdir -p "$BRU_RUN_CONFIG_DIR"
 
   local namespacePattern
   namespacePattern="$(bruEscapeRegex "$namespace")"
 
-  # [[ -f ]] instead of a bare touch: touch always bumps mtime even when the
-  # file already exists and nothing about it needs to change, which would
-  # silently defeat the skip-when-unchanged guard below.
   [[ -f "$BRU_RUN_REGISTRY" ]] || touch "$BRU_RUN_REGISTRY"
 
   local existing
@@ -236,7 +233,7 @@ function bruRegisterProject() {
 
 # Does the actual registry rewrite — split out from bruRegisterProject so it
 # can run under bruWithEnvLock (which calls "$@" as a plain command).
-function bruWriteRegistryEntry() {
+bruWriteRegistryEntry() {
   local namespace="$1" namespacePattern="$2" configFile="$3"
 
   if grep -q -m1 -E "^${namespacePattern}:" "$BRU_RUN_REGISTRY" 2>/dev/null; then
@@ -251,7 +248,7 @@ function bruWriteRegistryEntry() {
 }
 
 # Look a namespace up in the global registry. Prints the config path.
-function bruLookupProject() {
+bruLookupProject() {
   local namespace="$1"
   [[ -f "$BRU_RUN_REGISTRY" ]] || return 1
   local namespacePattern
@@ -267,7 +264,7 @@ function bruLookupProject() {
 # with the main checkout, not whichever worktree was resolved last. Prints
 # "namespace\tcollection\tenvHelper\tprotectedEnvs\tchainedVarsFile" on
 # success.
-function bruResolveProject() {
+bruResolveProject() {
   local projectName="$1" branchName="$2"
   local mainConfigFile
 
@@ -278,9 +275,6 @@ function bruResolveProject() {
       return 1
     fi
 
-    # cwd resolves to a different project than --project asked for — a stale
-    # copy-pasted command with the wrong --project would otherwise silently
-    # target the wrong project's collection and secrets with no indication.
     local cwdConfigFile
     cwdConfigFile="$(bruFindProjectConfig)"
     if [[ -n "$cwdConfigFile" && "$cwdConfigFile" != "$mainConfigFile" ]]; then
@@ -304,7 +298,7 @@ function bruResolveProject() {
   fi
 
   if [[ "$configFile" == "$mainConfigFile" ]]; then
-    print -r -- "$mainResolved"
+    printf '%s\n' "$mainResolved"
   else
     bruLoadProjectConfig "$configFile" || return 1
   fi
@@ -316,24 +310,41 @@ function bruResolveProject() {
 # Nath's own worktree-management tooling already uses: the branch name with
 # every / replaced by -, under .claude/worktrees/ at the main checkout's
 # root (the directory the resolved .bru-run.yml lives in).
-function bruResolveWorktreeConfig() {
+bruResolveWorktreeConfig() {
   local mainConfigFile="$1" branchName="$2"
   local worktreeSlug="${branchName//\//-}"
-  local worktreeConfigFile="${mainConfigFile:h}/.claude/worktrees/${worktreeSlug}/.bru-run.yml"
+  local worktreeConfigFile="${mainConfigFile%/*}/.claude/worktrees/${worktreeSlug}/.bru-run.yml"
 
   if [[ ! -f "$worktreeConfigFile" ]]; then
     echo "👩‍💻 no .bru-run.yml at .claude/worktrees/${worktreeSlug} — copy it from the main checkout first" >&2
     return 1
   fi
 
-  print -r -- "$worktreeConfigFile"
+  printf '%s\n' "$worktreeConfigFile"
+}
+
+# ---------------------------------------------------------------------------
+# Collection listing
+# ---------------------------------------------------------------------------
+
+# List a collection's request paths, one per line, sorted. folder.bru is
+# Bruno's own folder-settings file, not a request — always excluded.
+bruListRequests() {
+  local collection="$1"
+  ( cd "$collection" && find requests -name '*.bru' -not -name 'folder.bru' | sort )
+}
+
+# List a collection's environment names (no .bru suffix), one per line, sorted.
+bruListEnvNames() {
+  local collection="$1"
+  ( cd "$collection" && find environments -name '*.bru' -exec basename {} .bru \; | sort )
 }
 
 # Print the names inside an environment file's vars:secret [ ... ] block, one
 # per line — those are the ones whose real value has to live outside the
 # versioned collection. Plain vars {} entries already carry a usable value in
 # the collection itself.
-function bruSecretKeys() {
+bruSecretKeys() {
   local envFile="$1"
   [[ -f "$envFile" ]] || return 0
   awk '
@@ -347,10 +358,13 @@ function bruSecretKeys() {
 # files. --set patches a request before an environment is chosen, so the
 # masking decision cannot depend on which one — a key that is secret in any
 # environment is masked in the --set output regardless.
-function bruAllSecretKeys() {
+bruAllSecretKeys() {
   local collection="$1"
+  local files
+  mapfile -t files < <( cd "$collection" && find environments -name '*.bru' 2>/dev/null | sort )
   local f
-  for f in ${(f)"$( cd "$collection" && find environments -name '*.bru' 2>/dev/null | sort )"}; do
+  for f in "${files[@]}"; do
+    [[ -z "$f" ]] && continue
     bruSecretKeys "$collection/$f"
   done | sort -u
 }
@@ -364,7 +378,7 @@ function bruAllSecretKeys() {
 # collection/environments/<envName>.bru) but is just missing its secrets
 # file. A typo'd name (e.g. --env dve) is not silently turned into a new
 # placeholder — that hides the real env names instead of showing them.
-function bruEnsureEnvFile() {
+bruEnsureEnvFile() {
   local collection="$1" envHelper="$2" envName="$3"
   local envFile="$envHelper/$envName.bru"
 
@@ -389,28 +403,11 @@ function bruEnsureEnvFile() {
 }
 
 # ---------------------------------------------------------------------------
-# Collection listing
-# ---------------------------------------------------------------------------
-
-# List a collection's request paths, one per line, sorted. folder.bru is
-# Bruno's own folder-settings file, not a request — always excluded.
-function bruListRequests() {
-  local collection="$1"
-  ( cd "$collection" && find requests -name '*.bru' -not -name 'folder.bru' | sort )
-}
-
-# List a collection's environment names (no .bru suffix), one per line, sorted.
-function bruListEnvNames() {
-  local collection="$1"
-  ( cd "$collection" && find environments -name '*.bru' -exec basename {} .bru \; | sort )
-}
-
-# ---------------------------------------------------------------------------
 # fzf pickers
 # ---------------------------------------------------------------------------
 
 # fzf picker for a collection's requests. Prints the chosen path.
-function bruPickRequest() {
+bruPickRequest() {
   local collection="$1"
   bruListRequests "$collection" \
     | fzf --height 60% --reverse --prompt 'request > ' \
@@ -420,7 +417,7 @@ function bruPickRequest() {
 }
 
 # fzf picker for a collection's environments. Prints the chosen env name.
-function bruPickEnv() {
+bruPickEnv() {
   local collection="$1"
   bruListEnvNames "$collection" \
     | fzf --height 40% --reverse --prompt 'env > ' \
@@ -435,7 +432,7 @@ function bruPickEnv() {
 
 # Write key: value into a Bruno env file's `vars {}` block, replacing any
 # existing line for that key.
-function bruSetEnvVar() {
+bruSetEnvVar() {
   local envFile="$1" key="$2" value="$3"
   [[ -z "$value" || "$value" == "null" ]] && return 1
 
@@ -443,26 +440,22 @@ function bruSetEnvVar() {
   line="$(grep -m1 -E "^[[:space:]]*${key}[[:space:]]*:" "$envFile")"
 
   if [[ -n "$line" ]]; then
-    # strip everything up to the first colon, then trim spaces
     current="${line#*:}"
     current="${current## }"
     current="${current%% }"
     [[ "$current" == "$value" ]] && return 1
   fi
 
-  # rewrite the file with awk — avoids sed's regex/quoting pitfalls in zsh
   local tmp="${envFile}.tmp$$"
   awk -v k="$key" -v v="$value" '
     BEGIN { done = 0 }
     {
-      # replace an existing "key: ..." line
       if (!done && $0 ~ "^[ \t]*" k "[ \t]*:") {
         match($0, /^[ \t]*/)
         print substr($0, 1, RLENGTH) k ": " v
         done = 1
         next
       }
-      # otherwise insert before the closing brace of the vars block
       if (!done && $0 ~ /^\}/) {
         print "  " k ": " v
         done = 1
@@ -482,7 +475,7 @@ function bruSetEnvVar() {
 #
 # mkdir is atomic on every filesystem here, so it works as the lock. A lock
 # older than 30 seconds is left over from a run that died, and gets removed.
-function bruWithEnvLock() {
+bruWithEnvLock() {
   local envFile="$1"
   shift
   local lock="${envFile}.lock"
@@ -507,13 +500,16 @@ function bruWithEnvLock() {
   return $rc
 }
 
-# Read a chained-vars map file into an associative array. One pair per line:
-# the variable name, a run of whitespace, then the jq expression. Blank lines
+# ---------------------------------------------------------------------------
+# Chained variables
+# ---------------------------------------------------------------------------
+
+# Read a chained-vars map file into stdout. One pair per line:
+# the variable name, a tab, then the jq expression. Blank lines
 # and `#` comments are skipped. The expression keeps every space inside it, so
 # only the first whitespace run counts as the separator.
-function bruLoadChainedVarsFile() {
+bruLoadChainedVarsFile() {
   local mapFile="$1"
-  local -A map=()
   local line key expr
 
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -526,16 +522,8 @@ function bruLoadChainedVarsFile() {
     expr="${expr#"${expr%%[![:space:]]*}"}"
     [[ -z "$key" || -z "$expr" ]] && continue
 
-    map[$key]="$expr"
+    printf '%s\n' "$key"$'\t'"$expr"
   done < "$mapFile"
-
-  # Printed rather than returned: zsh cannot hand an associative array back
-  # out of a function, which is the same limit that broke BRU_RUN_CHAINED_VARS
-  # across the process boundary in the first place.
-  local k
-  for k in "${(@k)map}"; do
-    print -r -- "$k"$'\t'"${map[$k]}"
-  done
 }
 
 # Pull chained variables out of a --output json and persist them to the env
@@ -546,24 +534,26 @@ function bruLoadChainedVarsFile() {
 #   1. `chained_vars: <path>` in .bru-run.yml, which bin/bru-run resolves and
 #      passes in as $3. This is the path the CLI uses.
 #   2. BRU_RUN_CHAINED_VARS, an associative array set in the calling shell.
-#      This only works when lib/bru-run.zsh is sourced into that same shell:
-#      zsh cannot export an associative array, so it never reaches bin/bru-run
-#      running as its own process. Kept for callers that source the lib.
+#      This only works when lib/bru-run.sh is sourced into that same shell:
+#      the CLI's own bin/bru-run process cannot see a caller's shell
+#      variables at all, associative array or not — this path only ever
+#      worked for callers that `source lib/bru-run.sh` directly.
 #
 # The file wins when both are present. With neither, this is a no-op.
-function bruCaptureVars() {
+bruCaptureVars() {
   local out="$1" envFile="$2" mapFile="$3"
 
+  # Build map from either the file or the shell variable
   local -A map=()
   local pair
   if [[ -n "$mapFile" && -f "$mapFile" ]]; then
-    for pair in ${(f)"$(bruLoadChainedVarsFile "$mapFile")"}; do
+    while IFS= read -r pair; do
       [[ -z "$pair" ]] && continue
-      map[${pair%%$'\t'*}]="${pair#*$'\t'}"
-    done
+      map["${pair%%$'\t'*}"]="${pair#*$'\t'}"
+    done < <(bruLoadChainedVarsFile "$mapFile")
   else
     local k
-    for k in "${(@k)BRU_RUN_CHAINED_VARS}"; do
+    for k in "${!BRU_RUN_CHAINED_VARS[@]}"; do
       map[$k]="${BRU_RUN_CHAINED_VARS[$k]}"
     done
   fi
@@ -571,20 +561,26 @@ function bruCaptureVars() {
   (( ${#map[@]} == 0 )) && return 0
 
   local body key expr value
-  local -a saved=()
+  local saved=()
 
   body="$(jq -c '.[0].results[-1].response.data' "$out" 2>/dev/null)"
   [[ -z "$body" || "$body" == "null" ]] && return 0
 
-  for key expr in "${(kv)map[@]}"; do
+  for key in "${!map[@]}"; do
+    expr="${map[$key]}"
     value="$(jq -r "$expr // empty" <<< "$body" 2>/dev/null | head -1)"
     [[ -z "$value" || "$value" == "null" ]] && continue
     bruSetEnvVar "$envFile" "$key" "$value" && saved+=("$key")
   done
 
-  # Names only. A captured value is a secret as often as not, and this line
-  # goes straight into a terminal and into an agent's transcript.
-  (( ${#saved[@]} )) && echo "👩‍💻 saved to env '${envFile:t:r}': ${(j:, :)saved}"
+  if (( ${#saved[@]} )); then
+    local envBase="${envFile##*/}"
+    envBase="${envBase%.*}"
+    local savedJoined
+    savedJoined="$(printf '%s, ' "${saved[@]}")"
+    savedJoined="${savedJoined%, }"
+    echo "👩‍💻 saved to env '${envBase}': ${savedJoined}"
+  fi
   return 0
 }
 
@@ -603,19 +599,18 @@ function bruCaptureVars() {
 # Values are parsed as JSON when they are valid JSON scalars: 5 -> number,
 # true -> boolean, null -> null. Anything else is a string. Quote a value to
 # force a string: id='"5"'.
-function bruPatchBody() {
+bruPatchBody() {
   local collection="$1" body="$2"
   shift 2
 
-  local -a secretKeys=( ${(f)"$(bruAllSecretKeys "$collection")"} )
+  local secretKeys
+  mapfile -t secretKeys < <(bruAllSecretKeys "$collection")
 
   local base='.params.data'
   if [[ "$(jq -r 'try (.params.data | type) catch "missing"' <<< "$body")" != "object" ]]; then
     base=''
   fi
 
-  # NOT `path`: zsh ties that name to $PATH, so a local `path` empties PATH
-  # inside the function and every command becomes "not found".
   local pair key rawValue jqPath jqValue
   for pair in "$@"; do
     if [[ "$pair" != *=* ]]; then
@@ -634,37 +629,42 @@ function bruPatchBody() {
       jqPath=".${key}"
     fi
 
-    # A valid JSON value keeps its type; anything else becomes a string.
-    # -Rn --args takes the value as an argument, so no quoting of a jq program
-    # is needed and zsh has nothing to expand.
     if jq -e 'type == "number" or type == "boolean" or type == "null" or type == "object" or type == "array"' <<< "$rawValue" >/dev/null 2>&1; then
       jqValue="$rawValue"
     else
       jqValue="$(jq -Rn --args '$ARGS.positional[0]' -- "$rawValue")"
     fi
 
-    # jqPath is built from a user-supplied key, so it cannot be spliced
-    # straight into the jq program text — a key like "a,b" or "a;b" would
-    # change the program's meaning instead of just failing. --arg passes it
-    # as data; setpath addresses the path from that data instead of from
-    # program syntax.
-    local -a jqPathParts
-    jqPathParts=( ${(s:.:)jqPath#.} )
+    local jqPathParts
+    local jqPathStripped="${jqPath#.}"
+    IFS='.' read -ra jqPathParts <<< "$jqPathStripped"
     body="$(jq --argjson val "$jqValue" --args 'setpath($ARGS.positional; $val)' -- "${jqPathParts[@]}" <<< "$body" 2>/dev/null)" || {
       echo "👩‍💻 could not set '$key' (bad path?)" >&2
       return 1
     }
-    # Never echo a secret. The value still reaches the request; only the line
-    # printed here is masked, so a transcript or a screen share cannot leak it.
-    if [[ "${key:l}" == *(password|passwd|secret|token|api_key|apikey|session_id)* ]] \
-       || (( ${secretKeys[(Ie)${key##*.}]} )); then
+
+    local keyLower="${key,,}"
+    local keyTail="${key##*.}"
+    local isSecret=0
+    if [[ "$keyLower" == *password* || "$keyLower" == *passwd* || "$keyLower" == *secret* \
+       || "$keyLower" == *token* || "$keyLower" == *api_key* || "$keyLower" == *apikey* \
+       || "$keyLower" == *session_id* ]]; then
+      isSecret=1
+    else
+      local sk
+      for sk in "${secretKeys[@]}"; do
+        [[ "$sk" == "$keyTail" ]] && { isSecret=1; break; }
+      done
+    fi
+
+    if (( isSecret )); then
       echo "👩‍💻 set ${jqPath#.} = <hidden>" >&2
     else
       echo "👩‍💻 set ${jqPath#.} = $jqValue" >&2
     fi
   done
 
-  print -r -- "$body"
+  printf '%s\n' "$body"
 }
 
 # Shared awk function: how deep is brace nesting after scanning one line,
@@ -672,7 +672,7 @@ function bruPatchBody() {
 # value"). Used by both bruExtractBlock (read-only) and bruTempRequest
 # (rewrite) so the string-awareness only has to be gotten right once — a
 # naive gsub-count of every { and } was the bug fixed in #7/#5.
-typeset -g -r bruBlockDepthAwkFunc='
+declare -r bruBlockDepthAwkFunc='
   function depthAfterLine(s,    i, c, prev) {
     inStr = 0
     prev = ""
@@ -680,8 +680,6 @@ typeset -g -r bruBlockDepthAwkFunc='
       c = substr(s, i, 1)
       if (inStr) {
         if (c == "\"" && prev != "\\") inStr = 0
-        # an escaped backslash ("\\") must not make the next quote look
-        # escaped, so treat it as consumed rather than carried forward
         prev = (c == "\\" && prev == "\\") ? "" : c
         continue
       }
@@ -706,7 +704,7 @@ typeset -g -r bruBlockDepthAwkFunc='
 # inside the block (a nested list, an indented example) — the bug this
 # replaced: the old bruDocs stripped a hardcoded 2 spaces, preserving
 # anything past that; a naive `sed 's/^[ \t]*//'` strips everything.
-function bruExtractBlock() {
+bruExtractBlock() {
   local file="$1" blockName="$2"
   [[ -f "$file" ]] || return 1
 
@@ -731,18 +729,18 @@ function bruExtractBlock() {
 
 # Rewrite a request's body:json block into a temp .bru inside the collection,
 # so relative paths and collection-level scripts keep working. Prints its path.
-function bruTempRequest() {
+bruTempRequest() {
   local collection="$1" request="$2" newBody="$3"
 
   local dir="$collection/.bru-cli-tmp"
   mkdir -p "$dir" || return 1
-  local tmp="$dir/${request:t:r}-$$.bru"
+  local requestBase="${request##*/}"
+  requestBase="${requestBase%.*}"
+  local tmp="$dir/${requestBase}-$$.bru"
 
-  # The new body goes through a file: awk -v cannot carry newlines.
   local bodyFile="$dir/body-$$.json"
-  print -r -- "$newBody" > "$bodyFile" || return 1
+  printf '%s\n' "$newBody" > "$bodyFile" || return 1
 
-  # Replace the body:json { ... } block, matching its closing brace by depth.
   awk -v bodyFile="$bodyFile" "$bruBlockDepthAwkFunc"'
     BEGIN { inBody = 0; depth = 0 }
     !inBody && /^[ \t]*body:json[ \t]*\{/ {
@@ -763,7 +761,7 @@ function bruTempRequest() {
 
   rm -f "$bodyFile"
 
-  print -r -- "${tmp#$collection/}"
+  printf '%s\n' "${tmp#$collection/}"
 }
 
 # ---------------------------------------------------------------------------
@@ -778,36 +776,46 @@ function bruTempRequest() {
 #               a script, a pipe) fzf would hang waiting on keystrokes, so print
 #               the candidates to stderr and fail instead.
 # None       -> print the closest paths by the first term.
-function bruResolveRequest() {
-  # (#i) needs extended_glob; local_options keeps it inside this function.
-  setopt local_options extended_glob
-
+bruResolveRequest() {
   local collection="$1"
   shift
 
-  local -a all matches near
-  all=( ${(f)"$(bruListRequests "$collection")"} )
-  matches=( "${all[@]}" )
+  local all matches near
+  mapfile -t all < <(bruListRequests "$collection")
+  matches=("${all[@]}")
 
-  local term
+  local term item filtered
+  shopt -s nocasematch
   for term in "$@"; do
-    matches=( ${(M)matches:#(#i)*$term*} )
+    filtered=()
+    for item in "${matches[@]}"; do
+      [[ "$item" == *"$term"* ]] && filtered+=("$item")
+    done
+    matches=("${filtered[@]}")
   done
 
   if (( ${#matches[@]} == 1 )); then
-    print -r -- "${matches[1]}"
+    shopt -u nocasematch
+    printf '%s\n' "${matches[0]}"
     return 0
   fi
 
   if (( ${#matches[@]} == 0 )); then
+    shopt -u nocasematch
     echo "👩‍💻 no request matches: $*" >&2
-    near=( ${(M)all:#(#i)*$1*} )
+    near=()
+    for item in "${all[@]}"; do
+      shopt -s nocasematch
+      [[ "$item" == *"$1"* ]] && near+=("$item")
+      shopt -u nocasematch
+    done
     if (( ${#near[@]} )); then
       echo "👩‍💻 closest to '$1':" >&2
       printf '  %s\n' "${near[@]}" >&2
     fi
     return 1
   fi
+  shopt -u nocasematch
 
   if [[ -t 0 ]] && command -v fzf >/dev/null 2>&1; then
     printf '%s\n' "${matches[@]}" \
@@ -827,7 +835,7 @@ function bruResolveRequest() {
 # Main run function
 # ---------------------------------------------------------------------------
 
-function bruRun() {
+bruRun() {
   local collection="$1" envHelper="$2" protectedEnvsCsv="$3" chainedVarsFile="$4"
   shift 4
 
@@ -836,14 +844,12 @@ function bruRun() {
     return 1
   fi
 
-  # --envs -> just list environments
   if [[ "$1" == "--envs" ]]; then
     echo "👩‍💻 environments in $collection"
     bruListEnvNames "$collection" | sed 's/^/  /'
     return 0
   fi
 
-  # --list / --docs -> read the collection, never run anything
   if [[ "$1" == "--list" ]]; then
     shift
     bruList "$collection" "$@"
@@ -856,9 +862,7 @@ function bruRun() {
     return $?
   fi
 
-  # --show is ours, not bru's. --env/--local are both captured here so the
-  # helper env can take priority over the collection's own — see below.
-  local -a bruArgs=() sets=()
+  local bruArgs=() sets=()
   local show=0 env="" arg wantEnv=0 wantSet=0 wantData=0 dataJson="" confirm=0
   for arg in "$@"; do
     if (( wantEnv )); then
@@ -887,28 +891,24 @@ function bruRun() {
 
   set -- "${bruArgs[@]}"
 
-  local request i
+  local request
 
-  # Leading positional args are the request: either an exact path, or search
-  # terms to resolve against the collection (`bru-run session lookup`). Flags
-  # and anything after them stay as bru's own args.
-  local -a terms=()
+  local terms=()
   while [[ -n "$1" && "$1" != -* ]]; do
     terms+=("$1")
     shift
   done
   bruArgs=("$@")
 
-  if (( ${#terms[@]} == 1 )) && [[ -f "$collection/${terms[1]}" ]]; then
-    request="${terms[1]}"
+  if (( ${#terms[@]} == 1 )) && [[ -f "$collection/${terms[0]}" ]]; then
+    request="${terms[0]}"
   elif (( ${#terms[@]} )); then
     request="$(bruResolveRequest "$collection" "${terms[@]}")" || return 1
     [[ -z "$request" ]] && { echo "👩‍💻 cancelled" >&2; return 1; }
     echo "👩‍💻 matched request: $request"
-    show=1  # searched for it -> you want to see what came back
+    show=1
   fi
 
-  # no request given -> pick one interactively
   if [[ -z "$request" ]]; then
     if ! command -v fzf >/dev/null 2>&1; then
       echo "👩‍💻 fzf not installed — pass a request path, or: brew install fzf" >&2
@@ -916,7 +916,7 @@ function bruRun() {
     fi
     request="$(bruPickRequest "$collection")" || return 1
     [[ -z "$request" ]] && { echo "👩‍💻 cancelled" >&2; return 1; }
-    show=1  # picked it from the menu -> you want to see the result
+    show=1
   fi
 
   if [[ ! -f "$collection/$request" ]]; then
@@ -924,8 +924,6 @@ function bruRun() {
     return 1
   fi
 
-  # --set / --data -> run a patched copy, never touching the saved request.
-  # {{vars}} are left alone: bru interpolates them in the temp file as usual.
   local tmpRequest=""
   if (( ${#sets[@]} )) || [[ -n "$dataJson" ]]; then
     if ! command -v jq >/dev/null 2>&1; then
@@ -933,7 +931,6 @@ function bruRun() {
       return 1
     fi
 
-    # sweep temps left behind by a run that died before its own cleanup
     [[ -d "$collection/.bru-cli-tmp" ]] && \
       find "$collection/.bru-cli-tmp" -maxdepth 1 -type f -delete 2>/dev/null
 
@@ -944,9 +941,6 @@ function bruRun() {
       return 1
     fi
 
-    # {{$guid}} is not valid JSON — stash it, restore after jq. The literal is
-    # built in a variable: inline \{ escapes would survive the substitution and
-    # Bruno would stop interpolating the placeholder.
     local guidToken="__BRU_TMPL_GUID__"
     local guidLiteral='{{$guid}}'
     body="${body//$guidLiteral/$guidToken}"
@@ -978,10 +972,9 @@ function bruRun() {
       return 1
     }
     request="$tmpRequest"
-    show=1  # changed the payload -> you want to see what it returned
+    show=1
   fi
 
-  # no env given -> pick one interactively
   if [[ -z "$env" ]]; then
     if command -v fzf >/dev/null 2>&1; then
       env="$(bruPickEnv "$collection")" || return 1
@@ -989,22 +982,19 @@ function bruRun() {
     fi
   fi
 
-  # A project can list environments (e.g. prod) in its own .bru-run.yml as
-  # protected_envs. Calling one of those needs --confirm — this is the only
-  # code-level enforcement of environment safety; everything else is prose in
-  # SKILL.md that an agent has to choose to follow.
   if [[ -n "$env" && -n "$protectedEnvsCsv" ]]; then
-    local -a protectedEnvs=( ${(s:,:)protectedEnvsCsv} )
-    if (( ${protectedEnvs[(Ie)$env]} )) && (( ! confirm )); then
+    local protectedEnvs
+    IFS=',' read -ra protectedEnvs <<< "$protectedEnvsCsv"
+    local isProtected=0 pe
+    for pe in "${protectedEnvs[@]}"; do
+      [[ "$pe" == "$env" ]] && { isProtected=1; break; }
+    done
+    if (( isProtected )) && (( ! confirm )); then
       echo "👩‍💻 '$env' is a protected environment — pass --confirm to run against it" >&2
       return 1
     fi
   fi
 
-  # Resolve the env, preferring the project's own env_helper directory over
-  # the collection's own environments/. A collection may declare secrets as
-  # `vars:secret` with no real value in the versioned file — the helper
-  # directory is where the real value lives, outside any repo.
   local envFile=""
   if [[ -n "$env" ]]; then
     envFile="$envHelper/$env.bru"
@@ -1014,7 +1004,7 @@ function bruRun() {
     elif [[ -f "$collection/environments/$env.bru" ]]; then
       echo "👩‍💻 using collection env: $env (secrets will be empty)"
       bruArgs+=(--env "$env")
-      envFile=""  # never write captured values into the versioned collection
+      envFile=""
     else
       bruEnsureEnvFile "$collection" "$envHelper" "$env"
       return 1
@@ -1023,24 +1013,11 @@ function bruRun() {
 
   echo "👩‍💻 bru run $request ${bruArgs[*]}"
 
-  # Always run with --output: it is how both --show and the variable capture
-  # below read the response. Each `bru run` is a fresh process, so bru.setVar()
-  # dies with it and bru.setEnvVar() is in-memory only (as of CLI 3.5.2) — the
-  # chained values have to be written back to the env file by us.
-  #
-  # mktemp itself creates the bare file (no .json suffix) on disk; bru writes
-  # its output to $out (the suffixed name) instead, so the bare one is dead
-  # weight from the start and gets removed right away.
   local outBase out exitCode
   outBase="$(mktemp -t bru-response)"
   out="${outBase}.json"
   rm -f "$outBase"
 
-  # `|| exitCode=$?` instead of a bare statement: bin/bru-run runs under
-  # set -e, and a bare failing command here would abort the function before
-  # the cleanup below (rm -f "$out" / the tmp request file) ever runs, so a
-  # failed run — a network error, a bad request, anything — would leave temp
-  # files behind every time.
   exitCode=0
   ( cd "$collection" && bru run "$request" "${bruArgs[@]}" --output "$out" ) || exitCode=$?
 
@@ -1051,8 +1028,6 @@ function bruRun() {
     if (( show )); then
       echo
       echo "👩‍💻 response body"
-      # [-1], same as bruCaptureVars: with a folder/multi-step run the last
-      # response is the one you asked about. Identical for a single request.
       jq '.[0].results[-1].response.data' "$out"
     fi
   elif (( show )) && [[ -s "$out" ]]; then
@@ -1076,37 +1051,36 @@ function bruRun() {
 #
 # This exists so an agent can ask the collection what it holds with one command,
 # instead of a find plus a grep over every file.
-function bruList() {
-  setopt local_options extended_glob
-
+bruList() {
   local collection="$1"
   shift
 
-  local -a rows=()
+  local rows=()
   local f method width=0
-  # declared here, not inside the loop: zsh prints "term=''" when `local` runs
-  # again on a name that already exists in the same scope.
-  local term keep
+  local files
+  mapfile -t files < <(bruListRequests "$collection")
 
-  for f in ${(f)"$(bruListRequests "$collection")"}; do
+  local term keep
+  for f in "${files[@]}"; do
+    [[ -z "$f" ]] && continue
     method="$(grep -m1 -E '"method"[[:space:]]*:' "$collection/$f" \
               | sed -E 's/.*"method"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
 
-    # Not every request is JSON-RPC. Fall back to the HTTP verb block.
     if [[ -z "$method" ]]; then
       method="$(grep -m1 -E '^(get|post|put|patch|delete|head|options)[[:space:]]*\{' \
                 "$collection/$f" | sed -E 's/[[:space:]]*\{.*//' | tr 'a-z' 'A-Z')"
       [[ -z "$method" ]] && method="?"
     fi
 
-    # keep the row only when every term matches the path or the method
     keep=1
+    shopt -s nocasematch
     for term in "$@"; do
-      if [[ "$f" != (#i)*$term* && "$method" != (#i)*$term* ]]; then
+      if [[ "$f" != *"$term"* && "$method" != *"$term"* ]]; then
         keep=0
         break
       fi
     done
+    shopt -u nocasematch
     (( keep )) || continue
 
     (( ${#method} > width )) && width=${#method}
@@ -1120,14 +1094,14 @@ function bruList() {
 
   echo "👩‍💻 ${#rows[@]} requests in $collection"
   local row
-  for row in "${(o)rows[@]}"; do
+  while IFS= read -r row; do
     printf '  %-*s  %s\n' "$width" "${row%%|*}" "${row#*|}"
-  done
+  done < <(printf '%s\n' "${rows[@]}" | sort)
 }
 
 # Print the docs block of one request. Takes a path or search terms, same as a
 # normal run. Reads the file only — nothing is sent anywhere.
-function bruDocs() {
+bruDocs() {
   local collection="$1"
   shift
 

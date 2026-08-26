@@ -15,24 +15,35 @@ Anything posted to GitHub (PR comments, issue comments, commit messages) is
 always in English, no matter what language the working conversation happens
 to be in.
 
-## Language: zsh, not bash
+## Language: bash 4.0+, not zsh or POSIX sh
 
-`bin/bru-run` and `lib/bru-run.zsh` use zsh-only syntax throughout —
-associative arrays, `${(f)"..."}` splitting, `${0:A:h}`, `(#i)` glob
-qualifiers, `${var:l}`/`${var:t}` modifiers, and more. Don't write plain
-POSIX/bash assuming it'll work here; it won't.
+`bin/bru-run` and `lib/bru-run.sh` are bash, targeting 4.0+ specifically —
+native associative arrays (`declare -A`) are used in exactly one place
+(`bruLoadChainedVarsFile`/`bruCaptureVars`, driving `chained_vars`), and
+every other function also uses bash 4+ syntax (`${var,,}`, `mapfile`) with
+no 3.2-compatible equivalent worth writing for a single call site. Don't
+"helpfully" downgrade syntax to run on 3.2 — this was a deliberate choice,
+made when porting from zsh to bash in
+[issue #4](https://github.com/nathpaiva/bru-run/issues/4).
 
-zsh ships by default on macOS (Catalina+) but not on most Linux distros —
-this is a known gap, tracked in
-[issue #4](https://github.com/nathpaiva/bru-run/issues/4) (remove the zsh
-dependency, port to plain bash). Until that lands, treat zsh as a hard
-requirement, not an implementation detail to casually change.
+**This has a real cost on macOS.** Apple has shipped bash 3.2 by default
+since 2007 (GPLv3 licensing, not neglect) and never updates it. Every macOS
+user — whether or not they have zsh — needs `brew install bash` before
+`bru-run` will run. `bin/bru-run` checks `BASH_VERSINFO[0]` at startup and
+fails with an install hint rather than letting 3.2 hit a confusing parse
+error on unfamiliar syntax.
+
+Previously this project used zsh; that dependency was removed in
+[issue #4](https://github.com/nathpaiva/bru-run/issues/4) because zsh
+doesn't ship by default on most Linux distros. The lesson from that
+migration: check what a target platform actually ships before picking a
+version floor — this repo has now hit that gap twice, once per shell.
 
 ## Where things live
 
 - `bin/bru-run` — the entrypoint. Resolves which project to run against,
   handles the `init` subcommand, then hands off to `bruRun`.
-- `lib/bru-run.zsh` — the engine. Project/env resolution, env file locking,
+- `lib/bru-run.sh` — the engine. Project/env resolution, env file locking,
   payload patching, request discovery, the main `bruRun` function.
 - `skill/SKILL.md` — the Claude skill. Generic on purpose: it carries only
   the safety rules that make sense for *any* Bruno collection (never print a
@@ -43,7 +54,6 @@ requirement, not an implementation detail to casually change.
 - `examples/pompom-time/` — a fake collection used to prove the design end
   to end. Invented endpoints only. Never add real data here, even
   gitignored.
-- `docs/superpowers/specs/` — design docs for planned or completed work.
 
 ## `.bru-run.yml` — the per-project config
 
@@ -88,11 +98,12 @@ structure than that, point at a sidecar file the way `chained_vars` does.
 ## Associative arrays never cross a process boundary
 
 `BRU_RUN_CHAINED_VARS` was originally the only way to supply a chaining map,
-and it silently did nothing: `bin/bru-run` is its own process and zsh cannot
-export an associative array (`typeset -gAx` does not help). It still works
-when `lib/bru-run.zsh` is sourced into the calling shell, and it is kept for
-that case, but anything the CLI has to see belongs in `.bru-run.yml` or a
-file it points at. See [issue #10](https://github.com/nathpaiva/bru-run/issues/10).
+and it silently did nothing: `bin/bru-run` is its own process and bash (like
+zsh before it) cannot export an associative array (`declare -gAx` does not
+help). It still works when `lib/bru-run.sh` is sourced into the calling
+shell, and it is kept for that case, but anything the CLI has to see belongs
+in `.bru-run.yml` or a file it points at. See
+[issue #10](https://github.com/nathpaiva/bru-run/issues/10).
 
 ## Secrets never touch the repo
 
