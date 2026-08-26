@@ -763,3 +763,70 @@ bruTempRequest() {
 
   printf '%s\n' "${tmp#$collection/}"
 }
+
+# ---------------------------------------------------------------------------
+# Request discovery
+# ---------------------------------------------------------------------------
+
+# Resolve search terms to a request path. Every term must appear in the path
+# (case-insensitive, any order), so `session lookup` finds requests/session/lookup.bru.
+#
+# One match  -> print it.
+# Several    -> with a terminal, narrow them down in fzf; without one (an agent,
+#               a script, a pipe) fzf would hang waiting on keystrokes, so print
+#               the candidates to stderr and fail instead.
+# None       -> print the closest paths by the first term.
+bruResolveRequest() {
+  local collection="$1"
+  shift
+
+  local all matches near
+  mapfile -t all < <(bruListRequests "$collection")
+  matches=("${all[@]}")
+
+  local term item filtered
+  shopt -s nocasematch
+  for term in "$@"; do
+    filtered=()
+    for item in "${matches[@]}"; do
+      [[ "$item" == *"$term"* ]] && filtered+=("$item")
+    done
+    matches=("${filtered[@]}")
+  done
+
+  if (( ${#matches[@]} == 1 )); then
+    shopt -u nocasematch
+    printf '%s\n' "${matches[0]}"
+    return 0
+  fi
+
+  if (( ${#matches[@]} == 0 )); then
+    shopt -u nocasematch
+    echo "👩‍💻 no request matches: $*" >&2
+    near=()
+    for item in "${all[@]}"; do
+      shopt -s nocasematch
+      [[ "$item" == *"$1"* ]] && near+=("$item")
+      shopt -u nocasematch
+    done
+    if (( ${#near[@]} )); then
+      echo "👩‍💻 closest to '$1':" >&2
+      printf '  %s\n' "${near[@]}" >&2
+    fi
+    return 1
+  fi
+  shopt -u nocasematch
+
+  if [[ -t 0 ]] && command -v fzf >/dev/null 2>&1; then
+    printf '%s\n' "${matches[@]}" \
+      | fzf --height 60% --reverse --prompt 'request > ' \
+            --header "enter=select  esc=cancel  (${#matches[@]} match '$*')" \
+            --preview "sed -n '1,60p' '$collection/{}'" \
+            --preview-window 'right:55%:wrap'
+    return $?
+  fi
+
+  echo "👩‍💻 '$*' matches ${#matches[@]} requests — narrow it down:" >&2
+  printf '  %s\n' "${matches[@]}" >&2
+  return 1
+}
