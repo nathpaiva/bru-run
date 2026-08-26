@@ -830,3 +830,301 @@ bruResolveRequest() {
   printf '  %s\n' "${matches[@]}" >&2
   return 1
 }
+
+# ---------------------------------------------------------------------------
+# Main run function
+# ---------------------------------------------------------------------------
+
+bruRun() {
+  local collection="$1" envHelper="$2" protectedEnvsCsv="$3" chainedVarsFile="$4"
+  shift 4
+
+  if [[ ! -f "$collection/bruno.json" ]]; then
+    echo "👩‍💻 no bruno.json in $collection" >&2
+    return 1
+  fi
+
+  if [[ "$1" == "--envs" ]]; then
+    echo "👩‍💻 environments in $collection"
+    bruListEnvNames "$collection" | sed 's/^/  /'
+    return 0
+  fi
+
+  if [[ "$1" == "--list" ]]; then
+    shift
+    bruList "$collection" "$@"
+    return $?
+  fi
+
+  if [[ "$1" == "--docs" ]]; then
+    shift
+    bruDocs "$collection" "$@"
+    return $?
+  fi
+
+  local bruArgs=() sets=()
+  local show=0 env="" arg wantEnv=0 wantSet=0 wantData=0 dataJson="" confirm=0
+  for arg in "$@"; do
+    if (( wantEnv )); then
+      env="$arg"
+      wantEnv=0
+    elif (( wantSet )); then
+      sets+=("$arg")
+      wantSet=0
+    elif (( wantData )); then
+      dataJson="$arg"
+      wantData=0
+    elif [[ "$arg" == "--show" ]]; then
+      show=1
+    elif [[ "$arg" == "--env" || "$arg" == "--local" ]]; then
+      wantEnv=1
+    elif [[ "$arg" == "--set" ]]; then
+      wantSet=1
+    elif [[ "$arg" == "--data" ]]; then
+      wantData=1
+    elif [[ "$arg" == "--confirm" ]]; then
+      confirm=1
+    else
+      bruArgs+=("$arg")
+    fi
+  done
+
+  set -- "${bruArgs[@]}"
+
+  local request
+
+  local terms=()
+  while [[ -n "$1" && "$1" != -* ]]; do
+    terms+=("$1")
+    shift
+  done
+  bruArgs=("$@")
+
+  if (( ${#terms[@]} == 1 )) && [[ -f "$collection/${terms[0]}" ]]; then
+    request="${terms[0]}"
+  elif (( ${#terms[@]} )); then
+    request="$(bruResolveRequest "$collection" "${terms[@]}")" || return 1
+    [[ -z "$request" ]] && { echo "👩‍💻 cancelled" >&2; return 1; }
+    echo "👩‍💻 matched request: $request"
+    show=1
+  fi
+
+  if [[ -z "$request" ]]; then
+    if ! command -v fzf >/dev/null 2>&1; then
+      echo "👩‍💻 fzf not installed — pass a request path, or: brew install fzf" >&2
+      return 1
+    fi
+    request="$(bruPickRequest "$collection")" || return 1
+    [[ -z "$request" ]] && { echo "👩‍💻 cancelled" >&2; return 1; }
+    show=1
+  fi
+
+  if [[ ! -f "$collection/$request" ]]; then
+    echo "👩‍💻 request not found: $request" >&2
+    return 1
+  fi
+
+  local tmpRequest=""
+  if (( ${#sets[@]} )) || [[ -n "$dataJson" ]]; then
+    if ! command -v jq >/dev/null 2>&1; then
+      echo "👩‍💻 --set/--data need jq — brew install jq" >&2
+      return 1
+    fi
+
+    [[ -d "$collection/.bru-cli-tmp" ]] && \
+      find "$collection/.bru-cli-tmp" -maxdepth 1 -type f -delete 2>/dev/null
+
+    local body
+    body="$(bruExtractBlock "$collection/$request" body:json)"
+    if [[ -z "${body//[[:space:]]/}" ]]; then
+      echo "👩‍💻 no body:json block in $request" >&2
+      return 1
+    fi
+
+    local guidToken="__BRU_TMPL_GUID__"
+    local guidLiteral='{{$guid}}'
+    body="${body//$guidLiteral/$guidToken}"
+
+    if ! jq -e . <<< "$body" >/dev/null 2>&1; then
+      echo "👩‍💻 body:json in $request is not valid JSON — cannot patch" >&2
+      return 1
+    fi
+
+    if [[ -n "$dataJson" ]]; then
+      body="$(jq --argjson patch "$dataJson" \
+                 'if (.params.data | type) == "object"
+                  then .params.data *= $patch
+                  else . *= $patch end' <<< "$body")" || {
+        echo "👩‍💻 --data is not valid JSON" >&2
+        return 1
+      }
+      echo "👩‍💻 merged --data into params.data" >&2
+    fi
+
+    if (( ${#sets[@]} )); then
+      body="$(bruPatchBody "$collection" "$body" "${sets[@]}")" || return 1
+    fi
+
+    body="${body//$guidToken/$guidLiteral}"
+
+    tmpRequest="$(bruTempRequest "$collection" "$request" "$body")" || {
+      echo "👩‍💻 could not build patched request" >&2
+      return 1
+    }
+    request="$tmpRequest"
+    show=1
+  fi
+
+  if [[ -z "$env" ]]; then
+    if command -v fzf >/dev/null 2>&1; then
+      env="$(bruPickEnv "$collection")" || return 1
+      [[ -z "$env" ]] && { echo "👩‍💻 cancelled" >&2; return 1; }
+    fi
+  fi
+
+  if [[ -n "$env" && -n "$protectedEnvsCsv" ]]; then
+    local protectedEnvs
+    IFS=',' read -ra protectedEnvs <<< "$protectedEnvsCsv"
+    local isProtected=0 pe
+    for pe in "${protectedEnvs[@]}"; do
+      [[ "$pe" == "$env" ]] && { isProtected=1; break; }
+    done
+    if (( isProtected )) && (( ! confirm )); then
+      echo "👩‍💻 '$env' is a protected environment — pass --confirm to run against it" >&2
+      return 1
+    fi
+  fi
+
+  local envFile=""
+  if [[ -n "$env" ]]; then
+    envFile="$envHelper/$env.bru"
+    if [[ -f "$envFile" ]]; then
+      echo "👩‍💻 using project env: $env ($envFile)"
+      bruArgs+=(--env-file "$envFile")
+    elif [[ -f "$collection/environments/$env.bru" ]]; then
+      echo "👩‍💻 using collection env: $env (secrets will be empty)"
+      bruArgs+=(--env "$env")
+      envFile=""
+    else
+      bruEnsureEnvFile "$collection" "$envHelper" "$env"
+      return 1
+    fi
+  fi
+
+  echo "👩‍💻 bru run $request ${bruArgs[*]}"
+
+  local outBase out exitCode
+  outBase="$(mktemp -t bru-response)"
+  out="${outBase}.json"
+  rm -f "$outBase"
+
+  exitCode=0
+  ( cd "$collection" && bru run "$request" "${bruArgs[@]}" --output "$out" ) || exitCode=$?
+
+  if [[ -s "$out" ]] && command -v jq >/dev/null 2>&1; then
+    [[ -n "$envFile" && -f "$envFile" ]] && \
+      bruWithEnvLock "$envFile" bruCaptureVars "$out" "$envFile" "$chainedVarsFile"
+
+    if (( show )); then
+      echo
+      echo "👩‍💻 response body"
+      jq '.[0].results[-1].response.data' "$out"
+    fi
+  elif (( show )) && [[ -s "$out" ]]; then
+    echo
+    echo "👩‍💻 response body"
+    cat "$out"
+  fi
+
+  rm -f "$out"
+  [[ -n "$tmpRequest" ]] && rm -f "$collection/$tmpRequest"
+  return $exitCode
+}
+
+# ---------------------------------------------------------------------------
+# Discovery helpers
+# ---------------------------------------------------------------------------
+
+# List every request as "json-rpc method  ->  path". Optional terms filter the
+# list the same way bruResolveRequest does: every term must appear in the path
+# or in the method, any order, case insensitive.
+#
+# This exists so an agent can ask the collection what it holds with one command,
+# instead of a find plus a grep over every file.
+bruList() {
+  local collection="$1"
+  shift
+
+  local rows=()
+  local f method width=0
+  local files
+  mapfile -t files < <(bruListRequests "$collection")
+
+  local term keep
+  for f in "${files[@]}"; do
+    [[ -z "$f" ]] && continue
+    method="$(grep -m1 -E '"method"[[:space:]]*:' "$collection/$f" \
+              | sed -E 's/.*"method"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+
+    if [[ -z "$method" ]]; then
+      method="$(grep -m1 -E '^(get|post|put|patch|delete|head|options)[[:space:]]*\{' \
+                "$collection/$f" | sed -E 's/[[:space:]]*\{.*//' | tr 'a-z' 'A-Z')"
+      [[ -z "$method" ]] && method="?"
+    fi
+
+    keep=1
+    shopt -s nocasematch
+    for term in "$@"; do
+      if [[ "$f" != *"$term"* && "$method" != *"$term"* ]]; then
+        keep=0
+        break
+      fi
+    done
+    shopt -u nocasematch
+    (( keep )) || continue
+
+    (( ${#method} > width )) && width=${#method}
+    rows+=("$method|$f")
+  done
+
+  if (( ! ${#rows[@]} )); then
+    echo "👩‍💻 no request matches: $*" >&2
+    return 1
+  fi
+
+  echo "👩‍💻 ${#rows[@]} requests in $collection"
+  local row
+  while IFS= read -r row; do
+    printf '  %-*s  %s\n' "$width" "${row%%|*}" "${row#*|}"
+  done < <(printf '%s\n' "${rows[@]}" | sort)
+}
+
+# Print the docs block of one request. Takes a path or search terms, same as a
+# normal run. Reads the file only — nothing is sent anywhere.
+bruDocs() {
+  local collection="$1"
+  shift
+
+  if (( ! $# )); then
+    echo "👩‍💻 --docs needs a request path or search terms" >&2
+    return 1
+  fi
+
+  local request
+  if (( $# == 1 )) && [[ -f "$collection/$1" ]]; then
+    request="$1"
+  else
+    request="$(bruResolveRequest "$collection" "$@")" || return 1
+    [[ -z "$request" ]] && { echo "👩‍💻 cancelled" >&2; return 1; }
+  fi
+
+  echo "👩‍💻 $request"
+
+  local method
+  method="$(grep -m1 -E '"method"[[:space:]]*:' "$collection/$request" \
+            | sed -E 's/.*"method"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+  [[ -n "$method" ]] && echo "👩‍💻 method: $method"
+  echo
+
+  bruExtractBlock "$collection/$request" docs
+}
