@@ -177,6 +177,33 @@ function bruLoadProjectConfig() {
   print -r -- "$namespace"$'\t'"$collection"$'\t'"$envHelper"$'\t'"$protectedEnvs"$'\t'"$chainedVarsFile"
 }
 
+# The tab-delimited field order bruLoadProjectConfig/bruResolveProject print
+# in — the single source of truth both bruFieldsOf (below) and any future
+# reader has to match. Adding a field means adding it here, in the print -r
+# above, and nowhere else.
+typeset -g -ra bruResolvedFields=(namespace collection envHelper protectedEnvs chainedVarsFile)
+
+# Split a bruResolveProject/bruLoadProjectConfig tab-delimited result into
+# its named fields, instead of every caller hand-rolling %%/# slicing (which
+# has no single source of truth for field order, and silently misreads if a
+# field is ever added without updating every call site). Assigns each field
+# to a variable of the same name in the caller's scope — the caller must
+# `local` those names first, same convention as `read`.
+#
+# Usage: local namespace collection envHelper protectedEnvs chainedVarsFile
+#        bruFieldsOf "$resolved"
+function bruFieldsOf() {
+  local resolved="$1"
+  local -a values
+  values=( "${(@ps:\t:)resolved}" )
+
+  local i field
+  for i in {1..${#bruResolvedFields[@]}}; do
+    field="${bruResolvedFields[$i]}"
+    typeset -g "$field=${values[$i]}"
+  done
+}
+
 # Write/update one entry in the global registry so `--project <name>` can
 # find this project later, from anywhere. Called every time a .bru-run.yml
 # is found by walking up from cwd — no manual registration step.
@@ -184,13 +211,25 @@ function bruLoadProjectConfig() {
 # Locked with bruWithEnvLock: this runs on every invocation, including
 # read-only ones, so two bru-run calls at the same time could otherwise both
 # read the old file, both write a tmp copy, and one registration is lost.
+#
+# Skips the lock and the write entirely when the entry already matches —
+# without this, every --list/--docs call (read-only, nothing changed) still
+# takes the lock and rewrites the registry file on every single invocation.
 function bruRegisterProject() {
   local namespace="$1" configFile="$2"
   mkdir -p "$BRU_RUN_CONFIG_DIR"
-  touch "$BRU_RUN_REGISTRY"
 
   local namespacePattern
   namespacePattern="$(bruEscapeRegex "$namespace")"
+
+  # [[ -f ]] instead of a bare touch: touch always bumps mtime even when the
+  # file already exists and nothing about it needs to change, which would
+  # silently defeat the skip-when-unchanged guard below.
+  [[ -f "$BRU_RUN_REGISTRY" ]] || touch "$BRU_RUN_REGISTRY"
+
+  local existing
+  existing="$(grep -m1 -E "^${namespacePattern}:" "$BRU_RUN_REGISTRY" 2>/dev/null | sed -E "s/^${namespacePattern}:[[:space:]]*//")"
+  [[ "$existing" == "$configFile" ]] && return 0
 
   bruWithEnvLock "$BRU_RUN_REGISTRY" bruWriteRegistryEntry "$namespace" "$namespacePattern" "$configFile"
 }
@@ -331,7 +370,7 @@ function bruEnsureEnvFile() {
 
   if [[ ! -f "$collection/environments/$envName.bru" ]]; then
     echo "👩‍💻 unknown environment '$envName' — available environments:" >&2
-    ( cd "$collection" && find environments -name '*.bru' -exec basename {} .bru \; | sed 's/^/  /' | sort ) >&2
+    bruListEnvNames "$collection" | sed 's/^/  /' >&2
     return 1
   fi
 
@@ -350,13 +389,30 @@ function bruEnsureEnvFile() {
 }
 
 # ---------------------------------------------------------------------------
+# Collection listing
+# ---------------------------------------------------------------------------
+
+# List a collection's request paths, one per line, sorted. folder.bru is
+# Bruno's own folder-settings file, not a request — always excluded.
+function bruListRequests() {
+  local collection="$1"
+  ( cd "$collection" && find requests -name '*.bru' -not -name 'folder.bru' | sort )
+}
+
+# List a collection's environment names (no .bru suffix), one per line, sorted.
+function bruListEnvNames() {
+  local collection="$1"
+  ( cd "$collection" && find environments -name '*.bru' -exec basename {} .bru \; | sort )
+}
+
+# ---------------------------------------------------------------------------
 # fzf pickers
 # ---------------------------------------------------------------------------
 
 # fzf picker for a collection's requests. Prints the chosen path.
 function bruPickRequest() {
   local collection="$1"
-  ( cd "$collection" && find requests -name '*.bru' | sort ) \
+  bruListRequests "$collection" \
     | fzf --height 60% --reverse --prompt 'request > ' \
           --header 'enter=select  esc=cancel' \
           --preview "sed -n '1,60p' '$collection/{}'" \
@@ -366,7 +422,7 @@ function bruPickRequest() {
 # fzf picker for a collection's environments. Prints the chosen env name.
 function bruPickEnv() {
   local collection="$1"
-  ( cd "$collection" && find environments -name '*.bru' -exec basename {} .bru \; | sort ) \
+  bruListEnvNames "$collection" \
     | fzf --height 40% --reverse --prompt 'env > ' \
           --header 'enter=select  esc=cancel' \
           --preview "cat '$collection/environments/{}.bru'" \
@@ -611,6 +667,68 @@ function bruPatchBody() {
   print -r -- "$body"
 }
 
+# Shared awk function: how deep is brace nesting after scanning one line,
+# not counting braces inside a quoted JSON string (e.g. "note": "wrap {this}
+# value"). Used by both bruExtractBlock (read-only) and bruTempRequest
+# (rewrite) so the string-awareness only has to be gotten right once — a
+# naive gsub-count of every { and } was the bug fixed in #7/#5.
+typeset -g -r bruBlockDepthAwkFunc='
+  function depthAfterLine(s,    i, c, prev) {
+    inStr = 0
+    prev = ""
+    for (i = 1; i <= length(s); i++) {
+      c = substr(s, i, 1)
+      if (inStr) {
+        if (c == "\"" && prev != "\\") inStr = 0
+        # an escaped backslash ("\\") must not make the next quote look
+        # escaped, so treat it as consumed rather than carried forward
+        prev = (c == "\\" && prev == "\\") ? "" : c
+        continue
+      }
+      if (c == "\"") { inStr = 1; prev = ""; continue }
+      if (c == "{") depth++
+      else if (c == "}") depth--
+    }
+  }
+'
+
+# Print the inner lines of a `<blockName> { ... }` block from a .bru file —
+# the block's own indentation stripped, closing brace excluded. Prints
+# nothing (and fails) when the block isn't found. Read-only: never touches
+# the file.
+#
+# Only the indent level the block's first content line has is removed from
+# every inner line — not every leading whitespace character, and not the
+# open line's own indent (a `docs {` at column 0 tells us nothing about how
+# far in its content is indented; the standard .bru style indents block
+# content 2 spaces regardless of the block-open line's own column). A
+# blanket strip would flatten any indentation an author wrote on purpose
+# inside the block (a nested list, an indented example) — the bug this
+# replaced: the old bruDocs stripped a hardcoded 2 spaces, preserving
+# anything past that; a naive `sed 's/^[ \t]*//'` strips everything.
+function bruExtractBlock() {
+  local file="$1" blockName="$2"
+  [[ -f "$file" ]] || return 1
+
+  awk -v blockName="$blockName" "$bruBlockDepthAwkFunc"'
+    BEGIN { inBlock = 0; depth = 0; baseIndent = -1 }
+    !inBlock && $0 ~ ("^[ \t]*" blockName "[ \t]*\\{") { inBlock = 1; depth = 1; next }
+    inBlock {
+      depthAfterLine($0)
+      if (depth <= 0) { inBlock = 0; next }
+      if (baseIndent < 0 && $0 !~ /^[ \t]*$/) {
+        match($0, /^[ \t]*/)
+        baseIndent = RLENGTH
+      }
+      if (baseIndent >= 0 && $0 ~ ("^[ \t]{" baseIndent "}")) {
+        print substr($0, baseIndent + 1)
+      } else {
+        print
+      }
+    }
+  ' "$file"
+}
+
 # Rewrite a request's body:json block into a temp .bru inside the collection,
 # so relative paths and collection-level scripts keep working. Prints its path.
 function bruTempRequest() {
@@ -625,27 +743,7 @@ function bruTempRequest() {
   print -r -- "$newBody" > "$bodyFile" || return 1
 
   # Replace the body:json { ... } block, matching its closing brace by depth.
-  # Braces inside a quoted JSON string (e.g. "note": "wrap {this} value") do
-  # not count — the line is scanned char by char, tracking in-string state
-  # and \" escapes, instead of just gsub-counting every { and }.
-  awk -v bodyFile="$bodyFile" '
-    function depthAfterLine(s,    i, c, prev) {
-      inStr = 0
-      prev = ""
-      for (i = 1; i <= length(s); i++) {
-        c = substr(s, i, 1)
-        if (inStr) {
-          if (c == "\"" && prev != "\\") inStr = 0
-          # an escaped backslash ("\\") must not make the next quote look
-          # escaped, so treat it as consumed rather than carried forward
-          prev = (c == "\\" && prev == "\\") ? "" : c
-          continue
-        }
-        if (c == "\"") { inStr = 1; prev = ""; continue }
-        if (c == "{") depth++
-        else if (c == "}") depth--
-      }
-    }
+  awk -v bodyFile="$bodyFile" "$bruBlockDepthAwkFunc"'
     BEGIN { inBody = 0; depth = 0 }
     !inBody && /^[ \t]*body:json[ \t]*\{/ {
       print "body:json {"
@@ -688,7 +786,7 @@ function bruResolveRequest() {
   shift
 
   local -a all matches near
-  all=( ${(f)"$( cd "$collection" && find requests -name '*.bru' | sort )"} )
+  all=( ${(f)"$(bruListRequests "$collection")"} )
   matches=( "${all[@]}" )
 
   local term
@@ -741,7 +839,7 @@ function bruRun() {
   # --envs -> just list environments
   if [[ "$1" == "--envs" ]]; then
     echo "👩‍💻 environments in $collection"
-    ( cd "$collection" && find environments -name '*.bru' -exec basename {} .bru \; | sed 's/^/  /' | sort )
+    bruListEnvNames "$collection" | sed 's/^/  /'
     return 0
   fi
 
@@ -840,8 +938,7 @@ function bruRun() {
       find "$collection/.bru-cli-tmp" -maxdepth 1 -type f -delete 2>/dev/null
 
     local body
-    body="$(sed -n '/^[ \t]*body:json[ \t]*{/,/^}/p' "$collection/$request" \
-            | sed '1d;$d')"
+    body="$(bruExtractBlock "$collection/$request" body:json)"
     if [[ -z "${body//[[:space:]]/}" ]]; then
       echo "👩‍💻 no body:json block in $request" >&2
       return 1
@@ -991,8 +1088,7 @@ function bruList() {
   # again on a name that already exists in the same scope.
   local term keep
 
-  # -not -name folder.bru: that file is Bruno's folder settings, not a request.
-  for f in ${(f)"$( cd "$collection" && find requests -name '*.bru' -not -name 'folder.bru' | sort )"}; do
+  for f in ${(f)"$(bruListRequests "$collection")"}; do
     method="$(grep -m1 -E '"method"[[:space:]]*:' "$collection/$f" \
               | sed -E 's/.*"method"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
 
@@ -1056,14 +1152,5 @@ function bruDocs() {
   [[ -n "$method" ]] && echo "👩‍💻 method: $method"
   echo
 
-  # Print the docs { ... } block, matching its closing brace by depth.
-  awk '
-    !inDocs && /^[ \t]*docs[ \t]*\{/ { inDocs = 1; depth = 1; next }
-    inDocs {
-      n = gsub(/\{/, "{"); m = gsub(/\}/, "}")
-      depth += n - m
-      if (depth <= 0) { inDocs = 0; next }
-      print
-    }
-  ' "$collection/$request" | sed 's/^  //'
+  bruExtractBlock "$collection/$request" docs
 }
