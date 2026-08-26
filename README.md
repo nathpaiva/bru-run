@@ -5,10 +5,12 @@ to one API.
 
 ## Requirements
 
-- **zsh** — the CLI is written in zsh, not plain bash. macOS has it by
-  default since Catalina; on Linux, install it with your package manager
-  (e.g. `apt install zsh`, `dnf install zsh`). Removing this dependency is
-  tracked as a follow-up: [issue #4](https://github.com/nathpaiva/bru-run/issues/4).
+- **bash 4.0+** — the CLI is written in bash, not POSIX `sh`. Linux ships
+  bash 4+ by default on essentially every mainstream distro. **macOS does
+  not** — Apple has frozen macOS's system bash at 3.2 since 2007 (licensing,
+  not neglect), so macOS users need `brew install bash` first. Check your
+  version with `bash --version`; anything below 4.0 will fail with a clear
+  error pointing back here.
 - [`jq`](https://jqlang.org/) — used to patch and read JSON payloads.
 - [`fzf`](https://github.com/junegunn/fzf) — optional, only needed for the
   interactive request/environment pickers.
