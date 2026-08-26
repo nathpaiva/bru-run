@@ -68,8 +68,8 @@ copy and leave the original alone.
 
 **3. Never invent a request path or a flag.** Run `bru-run --list` and read
 it. The flags are `--env`, `--envs`, `--list`, `--docs`, `--show`, `--set`,
-`--data`, `--local`, `--project`, `--confirm`. The only subcommand is `init`.
-There are no others.
+`--data`, `--local`, `--project`, `--confirm`, `--branch`. The only
+subcommand is `init`. There are no others.
 
 **4. Ask before assuming which environment or project is safe to call.**
 A project can list its own sensitive environments (e.g. `prod`) in
@@ -91,6 +91,12 @@ Runs from any directory inside a project with a `.bru-run.yml` above it.
 `--show` prints the response body.
 
 From outside the project: `bru-run --project <namespace> <request> --env dev`.
+
+Running against a git worktree's own in-progress collection, without `cd`-ing
+there: `bru-run --branch <branch-name> --list` (combine with `--project` when
+also outside the main checkout). This only works once that worktree has its
+own `.bru-run.yml` — if it doesn't, `bru-run` says so and names the path it
+expected.
 
 If the shell answers `command not found: bru-run`, the CLI isn't installed
 or linked on this machine yet.

@@ -221,15 +221,20 @@ function bruLookupProject() {
 }
 
 # Resolve which project to run against: --project <name> forces a registry
-# lookup; otherwise walk up from cwd. Registers the project on success either
-# way. Prints "namespace\tcollection\tenvHelper" on success.
+# lookup; otherwise walk up from cwd. --branch <name> then swaps in that
+# worktree's own .bru-run.yml instead of the one just resolved — see
+# bruResolveWorktreeConfig. Registers the *main* project either way — never
+# the worktree's config — so the registry always answers a later --project
+# with the main checkout, not whichever worktree was resolved last. Prints
+# "namespace\tcollection\tenvHelper\tprotectedEnvs\tchainedVarsFile" on
+# success.
 function bruResolveProject() {
-  local projectName="$1"
-  local configFile
+  local projectName="$1" branchName="$2"
+  local mainConfigFile
 
   if [[ -n "$projectName" ]]; then
-    configFile="$(bruLookupProject "$projectName")"
-    if [[ -z "$configFile" || ! -f "$configFile" ]]; then
+    mainConfigFile="$(bruLookupProject "$projectName")"
+    if [[ -z "$mainConfigFile" || ! -f "$mainConfigFile" ]]; then
       echo "👩‍💻 unknown project '$projectName' — run bru-run from inside it once, or check $BRU_RUN_REGISTRY" >&2
       return 1
     fi
@@ -239,23 +244,50 @@ function bruResolveProject() {
     # target the wrong project's collection and secrets with no indication.
     local cwdConfigFile
     cwdConfigFile="$(bruFindProjectConfig)"
-    if [[ -n "$cwdConfigFile" && "$cwdConfigFile" != "$configFile" ]]; then
-      echo "👩‍💻 warning: --project '$projectName' ($configFile) differs from this directory's own project ($cwdConfigFile)" >&2
+    if [[ -n "$cwdConfigFile" && "$cwdConfigFile" != "$mainConfigFile" ]]; then
+      echo "👩‍💻 warning: --project '$projectName' ($mainConfigFile) differs from this directory's own project ($cwdConfigFile)" >&2
     fi
   else
-    configFile="$(bruFindProjectConfig)" || {
+    mainConfigFile="$(bruFindProjectConfig)" || {
       echo "👩‍💻 no .bru-run.yml found above $PWD — pass --project <name>, or run 'bru-run init' here" >&2
       return 1
     }
   fi
 
-  local resolved
-  resolved="$(bruLoadProjectConfig "$configFile")" || return 1
+  local mainResolved
+  mainResolved="$(bruLoadProjectConfig "$mainConfigFile")" || return 1
+  local namespace="${mainResolved%%$'\t'*}"
+  bruRegisterProject "$namespace" "$mainConfigFile"
 
-  local namespace="${resolved%%$'\t'*}"
-  bruRegisterProject "$namespace" "$configFile"
+  local configFile="$mainConfigFile"
+  if [[ -n "$branchName" ]]; then
+    configFile="$(bruResolveWorktreeConfig "$mainConfigFile" "$branchName")" || return 1
+  fi
 
-  print -r -- "$resolved"
+  if [[ "$configFile" == "$mainConfigFile" ]]; then
+    print -r -- "$mainResolved"
+  else
+    bruLoadProjectConfig "$configFile" || return 1
+  fi
+}
+
+# Swap a project's main .bru-run.yml for the one inside one of its own git
+# worktrees, so a request can run against a branch's in-progress collection
+# changes without cd-ing there first. Matches the folder-naming convention
+# Nath's own worktree-management tooling already uses: the branch name with
+# every / replaced by -, under .claude/worktrees/ at the main checkout's
+# root (the directory the resolved .bru-run.yml lives in).
+function bruResolveWorktreeConfig() {
+  local mainConfigFile="$1" branchName="$2"
+  local worktreeSlug="${branchName//\//-}"
+  local worktreeConfigFile="${mainConfigFile:h}/.claude/worktrees/${worktreeSlug}/.bru-run.yml"
+
+  if [[ ! -f "$worktreeConfigFile" ]]; then
+    echo "👩‍💻 no .bru-run.yml at .claude/worktrees/${worktreeSlug} — copy it from the main checkout first" >&2
+    return 1
+  fi
+
+  print -r -- "$worktreeConfigFile"
 }
 
 # Print the names inside an environment file's vars:secret [ ... ] block, one
