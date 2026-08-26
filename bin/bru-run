@@ -14,7 +14,19 @@ if (( BASH_VERSINFO[0] < 4 )); then
   exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Follow the symlink chain to the real file before taking its directory.
+# `npm link` and `npm i -g` both put a symlink in the npm bin dir, so
+# BASH_SOURCE[0] is that symlink, not the file in the clone. Taking its
+# dirname straight away would look for lib/ next to the symlink, where
+# there is none. macOS has no `readlink -f`, so walk the chain by hand.
+SCRIPT_SRC="${BASH_SOURCE[0]}"
+while [[ -L "$SCRIPT_SRC" ]]; do
+  SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_SRC")" && pwd)"
+  SCRIPT_SRC="$(readlink "$SCRIPT_SRC")"
+  # A relative link points at a path next to the link itself.
+  [[ "$SCRIPT_SRC" != /* ]] && SCRIPT_SRC="$SCRIPT_DIR/$SCRIPT_SRC"
+done
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_SRC")" && pwd)"
 source "$SCRIPT_DIR/../lib/bru-run.sh"
 
 # `bru-run --help` / `-h` — print usage and exit. Checked before init and
