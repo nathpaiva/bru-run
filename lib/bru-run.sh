@@ -181,7 +181,7 @@ bruLoadProjectConfig() {
 # in — the single source of truth both bruFieldsOf (below) and any future
 # reader has to match. Adding a field means adding it here, in the printf
 # above, and nowhere else.
-declare -ag bruResolvedFields=(namespace collection envHelper protectedEnvs chainedVarsFile)
+bruResolvedFields=(namespace collection envHelper protectedEnvs chainedVarsFile)
 
 # Split a bruResolveProject/bruLoadProjectConfig tab-delimited result into
 # its named fields, instead of every caller hand-rolling %%/# slicing (which
@@ -200,7 +200,7 @@ bruFieldsOf() {
   local i field
   for i in "${!bruResolvedFields[@]}"; do
     field="${bruResolvedFields[$i]}"
-    declare -g "$field=${values[$i]}"
+    printf -v "$field" '%s' "${values[$i]}"
   done
 }
 
