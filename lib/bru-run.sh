@@ -322,3 +322,264 @@ bruResolveWorktreeConfig() {
 
   printf '%s\n' "$worktreeConfigFile"
 }
+
+# ---------------------------------------------------------------------------
+# Collection listing
+# ---------------------------------------------------------------------------
+
+# List a collection's request paths, one per line, sorted. folder.bru is
+# Bruno's own folder-settings file, not a request — always excluded.
+bruListRequests() {
+  local collection="$1"
+  ( cd "$collection" && find requests -name '*.bru' -not -name 'folder.bru' | sort )
+}
+
+# List a collection's environment names (no .bru suffix), one per line, sorted.
+bruListEnvNames() {
+  local collection="$1"
+  ( cd "$collection" && find environments -name '*.bru' -exec basename {} .bru \; | sort )
+}
+
+# Print the names inside an environment file's vars:secret [ ... ] block, one
+# per line — those are the ones whose real value has to live outside the
+# versioned collection. Plain vars {} entries already carry a usable value in
+# the collection itself.
+bruSecretKeys() {
+  local envFile="$1"
+  [[ -f "$envFile" ]] || return 0
+  awk '
+    /^[ \t]*vars:secret[ \t]*\[/ { inSecret = 1; next }
+    inSecret && /\]/ { inSecret = 0; next }
+    inSecret { gsub(/^[ \t]*|[ \t]*,?[ \t]*$/, ""); if (length($0)) print }
+  ' "$envFile"
+}
+
+# Union of every vars:secret key across all of a collection's environment
+# files. --set patches a request before an environment is chosen, so the
+# masking decision cannot depend on which one — a key that is secret in any
+# environment is masked in the --set output regardless.
+bruAllSecretKeys() {
+  local collection="$1"
+  local files
+  mapfile -t files < <( cd "$collection" && find environments -name '*.bru' 2>/dev/null | sort )
+  local f
+  for f in "${files[@]}"; do
+    [[ -z "$f" ]] && continue
+    bruSecretKeys "$collection/$f"
+  done | sort -u
+}
+
+# Create a project's env_helper directory and a placeholder env file the
+# first time a requested environment is missing everywhere. Secrets never
+# live inside a versioned repo — not even gitignored — so the first run
+# always has to create this file outside of one.
+#
+# Only auto-creates when envName is a real environment (has a
+# collection/environments/<envName>.bru) but is just missing its secrets
+# file. A typo'd name (e.g. --env dve) is not silently turned into a new
+# placeholder — that hides the real env names instead of showing them.
+bruEnsureEnvFile() {
+  local collection="$1" envHelper="$2" envName="$3"
+  local envFile="$envHelper/$envName.bru"
+
+  if [[ ! -f "$collection/environments/$envName.bru" ]]; then
+    echo "👩‍💻 unknown environment '$envName' — available environments:" >&2
+    bruListEnvNames "$collection" | sed 's/^/  /' >&2
+    return 1
+  fi
+
+  mkdir -p "$envHelper" && chmod 700 "$envHelper"
+
+  {
+    echo "vars {"
+    bruSecretKeys "$collection/environments/$envName.bru" \
+      | while read -r key; do echo "  ${key}: "; done
+    echo "}"
+  } > "$envFile"
+  chmod 600 "$envFile"
+
+  echo "👩‍💻 created $envFile — fill in the values, then run this again" >&2
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# fzf pickers
+# ---------------------------------------------------------------------------
+
+# fzf picker for a collection's requests. Prints the chosen path.
+bruPickRequest() {
+  local collection="$1"
+  bruListRequests "$collection" \
+    | fzf --height 60% --reverse --prompt 'request > ' \
+          --header 'enter=select  esc=cancel' \
+          --preview "sed -n '1,60p' '$collection/{}'" \
+          --preview-window 'right:55%:wrap'
+}
+
+# fzf picker for a collection's environments. Prints the chosen env name.
+bruPickEnv() {
+  local collection="$1"
+  bruListEnvNames "$collection" \
+    | fzf --height 40% --reverse --prompt 'env > ' \
+          --header 'enter=select  esc=cancel' \
+          --preview "cat '$collection/environments/{}.bru'" \
+          --preview-window 'right:55%:wrap'
+}
+
+# ---------------------------------------------------------------------------
+# Env file writes and locking
+# ---------------------------------------------------------------------------
+
+# Write key: value into a Bruno env file's `vars {}` block, replacing any
+# existing line for that key.
+bruSetEnvVar() {
+  local envFile="$1" key="$2" value="$3"
+  [[ -z "$value" || "$value" == "null" ]] && return 1
+
+  local line current
+  line="$(grep -m1 -E "^[[:space:]]*${key}[[:space:]]*:" "$envFile")"
+
+  if [[ -n "$line" ]]; then
+    current="${line#*:}"
+    current="${current## }"
+    current="${current%% }"
+    [[ "$current" == "$value" ]] && return 1
+  fi
+
+  local tmp="${envFile}.tmp$$"
+  awk -v k="$key" -v v="$value" '
+    BEGIN { done = 0 }
+    {
+      if (!done && $0 ~ "^[ \t]*" k "[ \t]*:") {
+        match($0, /^[ \t]*/)
+        print substr($0, 1, RLENGTH) k ": " v
+        done = 1
+        next
+      }
+      if (!done && $0 ~ /^\}/) {
+        print "  " k ": " v
+        done = 1
+      }
+      print
+    }
+  ' "$envFile" > "$tmp" && mv "$tmp" "$envFile" && chmod 600 "$envFile"
+  return 0
+}
+
+# Run a command while holding a lock on the env file.
+#
+# bruSetEnvVar reads the whole file, rewrites it and moves it back. Two runs
+# at the same time — two agents, two terminal tabs — both read the old copy
+# and the last mv wins, so the other one's values are lost. That is how a
+# whole env file ends up empty.
+#
+# mkdir is atomic on every filesystem here, so it works as the lock. A lock
+# older than 30 seconds is left over from a run that died, and gets removed.
+bruWithEnvLock() {
+  local envFile="$1"
+  shift
+  local lock="${envFile}.lock"
+  local waited=0
+
+  while ! mkdir "$lock" 2>/dev/null; do
+    if [[ -d "$lock" ]] && [[ -z "$(find "$lock" -maxdepth 0 -mmin -0.5 2>/dev/null)" ]]; then
+      rmdir "$lock" 2>/dev/null
+      continue
+    fi
+    sleep 0.1
+    (( waited += 1 ))
+    if (( waited > 100 )); then
+      echo "👩‍💻 env file is busy, skipped saving variables" >&2
+      return 1
+    fi
+  done
+
+  "$@"
+  local rc=$?
+  rmdir "$lock" 2>/dev/null
+  return $rc
+}
+
+# ---------------------------------------------------------------------------
+# Chained variables
+# ---------------------------------------------------------------------------
+
+# Read a chained-vars map file into stdout. One pair per line:
+# the variable name, a tab, then the jq expression. Blank lines
+# and `#` comments are skipped. The expression keeps every space inside it, so
+# only the first whitespace run counts as the separator.
+bruLoadChainedVarsFile() {
+  local mapFile="$1"
+  local line key expr
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "${line//[[:space:]]/}" ]] && continue
+    [[ "${line#"${line%%[![:space:]]*}"}" == '#'* ]] && continue
+
+    key="${line%%[[:space:]]*}"
+    expr="${line#"$key"}"
+    expr="${expr#"${expr%%[![:space:]]*}"}"
+    [[ -z "$key" || -z "$expr" ]] && continue
+
+    printf '%s\n' "$key"$'\t'"$expr"
+  done < "$mapFile"
+}
+
+# Pull chained variables out of a --output json and persist them to the env
+# file. Chaining is specific to one API's response shapes, so bru-run carries
+# no built-in map of its own — a project supplies {envVarName: jq expression}
+# in one of two ways:
+#
+#   1. `chained_vars: <path>` in .bru-run.yml, which bin/bru-run resolves and
+#      passes in as $3. This is the path the CLI uses.
+#   2. BRU_RUN_CHAINED_VARS, an associative array set in the calling shell.
+#      This only works when lib/bru-run.sh is sourced into that same shell:
+#      the CLI's own bin/bru-run process cannot see a caller's shell
+#      variables at all, associative array or not — this path only ever
+#      worked for callers that `source lib/bru-run.sh` directly.
+#
+# The file wins when both are present. With neither, this is a no-op.
+bruCaptureVars() {
+  local out="$1" envFile="$2" mapFile="$3"
+
+  # Build map from either the file or the shell variable
+  local -A map=()
+  local pair
+  if [[ -n "$mapFile" && -f "$mapFile" ]]; then
+    while IFS= read -r pair; do
+      [[ -z "$pair" ]] && continue
+      map["${pair%%$'\t'*}"]="${pair#*$'\t'}"
+    done < <(bruLoadChainedVarsFile "$mapFile")
+  else
+    local k
+    for k in "${!BRU_RUN_CHAINED_VARS[@]:-}"; do
+      map[$k]="${BRU_RUN_CHAINED_VARS[$k]}"
+    done
+  fi
+
+  (( ${#map[@]} == 0 )) && return 0
+
+  local body key expr value
+  local saved=()
+
+  body="$(jq -c '.[0].results[-1].response.data' "$out" 2>/dev/null)"
+  [[ -z "$body" || "$body" == "null" ]] && return 0
+
+  for key in "${!map[@]}"; do
+    expr="${map[$key]}"
+    value="$(jq -r "$expr // empty" <<< "$body" 2>/dev/null | head -1)"
+    [[ -z "$value" || "$value" == "null" ]] && continue
+    bruSetEnvVar "$envFile" "$key" "$value" && saved+=("$key")
+  done
+
+  if (( ${#saved[@]} )); then
+    local envBase="${envFile##*/}"
+    envBase="${envBase%.*}"
+    local savedJoined
+    savedJoined="$(printf '%s, ' "${saved[@]}")"
+    savedJoined="${savedJoined%, }"
+    echo "👩‍💻 saved to env '${envBase}': ${savedJoined}"
+  fi
+  return 0
+}
