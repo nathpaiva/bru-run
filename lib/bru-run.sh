@@ -553,7 +553,7 @@ bruCaptureVars() {
     done < <(bruLoadChainedVarsFile "$mapFile")
   else
     local k
-    for k in "${!BRU_RUN_CHAINED_VARS[@]:-}"; do
+    for k in "${!BRU_RUN_CHAINED_VARS[@]}"; do
       map[$k]="${BRU_RUN_CHAINED_VARS[$k]}"
     done
   fi
