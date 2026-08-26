@@ -1,13 +1,21 @@
-#!/usr/bin/env zsh
+#!/usr/bin/env bash
 #
 # bru-run — run Bruno collection requests from any project.
 #
-# See lib/bru-run.zsh for the full flag reference. This entrypoint only
+# See lib/bru-run.sh for the full flag reference. This entrypoint only
 # resolves which project to run against, then hands off to bruRun.
 
 set -e
-SCRIPT_DIR="${0:A:h}"
-source "$SCRIPT_DIR/../lib/bru-run.zsh"
+
+if (( BASH_VERSINFO[0] < 4 )); then
+  echo "👩‍💻 bru-run needs bash 4.0+ (found ${BASH_VERSION})." >&2
+  echo "👩‍💻 macOS ships bash 3.2 by default — install a newer one with:" >&2
+  echo "👩‍💻   brew install bash" >&2
+  exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/bru-run.sh"
 
 # `bru-run --help` / `-h` — print usage and exit. Checked before init and
 # before any project resolution, so it works with no .bru-run.yml present.
@@ -76,15 +84,17 @@ if [[ "$1" == "init" ]]; then
     echo "collection: $collection"
     echo "env_helper: ~/.bru-run/$namespace"
     if [[ -n "$protectedEnvsInput" ]]; then
-      local -a names=( ${(s:,:)protectedEnvsInput} )
-      local n trimmed
-      local -a trimmedNames=()
+      names=()
+      IFS=',' read -ra names <<< "$protectedEnvsInput"
+      trimmedNames=()
       for n in "${names[@]}"; do
         trimmed="${n## }"
         trimmed="${trimmed%% }"
         [[ -n "$trimmed" ]] && trimmedNames+=("$trimmed")
       done
-      echo "protected_envs: [${(j:, :)trimmedNames}]"
+      joined="$(printf '%s, ' "${trimmedNames[@]}")"
+      joined="${joined%, }"
+      echo "protected_envs: [${joined}]"
     fi
   } > "$PWD/.bru-run.yml"
 
