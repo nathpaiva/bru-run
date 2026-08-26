@@ -583,3 +583,183 @@ bruCaptureVars() {
   fi
   return 0
 }
+
+# ---------------------------------------------------------------------------
+# Payload patching
+# ---------------------------------------------------------------------------
+
+# Build a jq filter from --set key=value pairs and apply it to a JSON body.
+#
+# Paths are relative to params.data (`coupon.id` -> params.data.coupon.id),
+# because that is where a JSON-RPC action typically keeps its arguments. A
+# leading `$.` addresses the document root instead (`$.params.auth.session_id`).
+# Requests without a params.data resolve short paths against the root, so
+# nothing invents a `data` object.
+#
+# Values are parsed as JSON when they are valid JSON scalars: 5 -> number,
+# true -> boolean, null -> null. Anything else is a string. Quote a value to
+# force a string: id='"5"'.
+bruPatchBody() {
+  local collection="$1" body="$2"
+  shift 2
+
+  local secretKeys
+  mapfile -t secretKeys < <(bruAllSecretKeys "$collection")
+
+  local base='.params.data'
+  if [[ "$(jq -r 'try (.params.data | type) catch "missing"' <<< "$body")" != "object" ]]; then
+    base=''
+  fi
+
+  local pair key rawValue jqPath jqValue
+  for pair in "$@"; do
+    if [[ "$pair" != *=* ]]; then
+      echo "👩‍💻 --set needs key=value, got: $pair" >&2
+      return 1
+    fi
+
+    key="${pair%%=*}"
+    rawValue="${pair#*=}"
+
+    if [[ "$key" == '$.'* ]]; then
+      jqPath=".${key#\$.}"
+    elif [[ -n "$base" ]]; then
+      jqPath="${base}.${key}"
+    else
+      jqPath=".${key}"
+    fi
+
+    if jq -e 'type == "number" or type == "boolean" or type == "null" or type == "object" or type == "array"' <<< "$rawValue" >/dev/null 2>&1; then
+      jqValue="$rawValue"
+    else
+      jqValue="$(jq -Rn --args '$ARGS.positional[0]' -- "$rawValue")"
+    fi
+
+    local jqPathParts
+    local jqPathStripped="${jqPath#.}"
+    IFS='.' read -ra jqPathParts <<< "$jqPathStripped"
+    body="$(jq --argjson val "$jqValue" --args 'setpath($ARGS.positional; $val)' -- "${jqPathParts[@]}" <<< "$body" 2>/dev/null)" || {
+      echo "👩‍💻 could not set '$key' (bad path?)" >&2
+      return 1
+    }
+
+    local keyLower="${key,,}"
+    local keyTail="${key##*.}"
+    local isSecret=0
+    if [[ "$keyLower" == *password* || "$keyLower" == *passwd* || "$keyLower" == *secret* \
+       || "$keyLower" == *token* || "$keyLower" == *api_key* || "$keyLower" == *apikey* \
+       || "$keyLower" == *session_id* ]]; then
+      isSecret=1
+    else
+      local sk
+      for sk in "${secretKeys[@]}"; do
+        [[ "$sk" == "$keyTail" ]] && { isSecret=1; break; }
+      done
+    fi
+
+    if (( isSecret )); then
+      echo "👩‍💻 set ${jqPath#.} = <hidden>" >&2
+    else
+      echo "👩‍💻 set ${jqPath#.} = $jqValue" >&2
+    fi
+  done
+
+  printf '%s\n' "$body"
+}
+
+# Shared awk function: how deep is brace nesting after scanning one line,
+# not counting braces inside a quoted JSON string (e.g. "note": "wrap {this}
+# value"). Used by both bruExtractBlock (read-only) and bruTempRequest
+# (rewrite) so the string-awareness only has to be gotten right once — a
+# naive gsub-count of every { and } was the bug fixed in #7/#5.
+declare -r bruBlockDepthAwkFunc='
+  function depthAfterLine(s,    i, c, prev) {
+    inStr = 0
+    prev = ""
+    for (i = 1; i <= length(s); i++) {
+      c = substr(s, i, 1)
+      if (inStr) {
+        if (c == "\"" && prev != "\\") inStr = 0
+        prev = (c == "\\" && prev == "\\") ? "" : c
+        continue
+      }
+      if (c == "\"") { inStr = 1; prev = ""; continue }
+      if (c == "{") depth++
+      else if (c == "}") depth--
+    }
+  }
+'
+
+# Print the inner lines of a `<blockName> { ... }` block from a .bru file —
+# the block's own indentation stripped, closing brace excluded. Prints
+# nothing (and fails) when the block isn't found. Read-only: never touches
+# the file.
+#
+# Only the indent level the block's first content line has is removed from
+# every inner line — not every leading whitespace character, and not the
+# open line's own indent (a `docs {` at column 0 tells us nothing about how
+# far in its content is indented; the standard .bru style indents block
+# content 2 spaces regardless of the block-open line's own column). A
+# blanket strip would flatten any indentation an author wrote on purpose
+# inside the block (a nested list, an indented example) — the bug this
+# replaced: the old bruDocs stripped a hardcoded 2 spaces, preserving
+# anything past that; a naive `sed 's/^[ \t]*//'` strips everything.
+bruExtractBlock() {
+  local file="$1" blockName="$2"
+  [[ -f "$file" ]] || return 1
+
+  awk -v blockName="$blockName" "$bruBlockDepthAwkFunc"'
+    BEGIN { inBlock = 0; depth = 0; baseIndent = -1 }
+    !inBlock && $0 ~ ("^[ \t]*" blockName "[ \t]*\\{") { inBlock = 1; depth = 1; next }
+    inBlock {
+      depthAfterLine($0)
+      if (depth <= 0) { inBlock = 0; next }
+      if (baseIndent < 0 && $0 !~ /^[ \t]*$/) {
+        match($0, /^[ \t]*/)
+        baseIndent = RLENGTH
+      }
+      if (baseIndent >= 0 && $0 ~ ("^[ \t]{" baseIndent "}")) {
+        print substr($0, baseIndent + 1)
+      } else {
+        print
+      }
+    }
+  ' "$file"
+}
+
+# Rewrite a request's body:json block into a temp .bru inside the collection,
+# so relative paths and collection-level scripts keep working. Prints its path.
+bruTempRequest() {
+  local collection="$1" request="$2" newBody="$3"
+
+  local dir="$collection/.bru-cli-tmp"
+  mkdir -p "$dir" || return 1
+  local requestBase="${request##*/}"
+  requestBase="${requestBase%.*}"
+  local tmp="$dir/${requestBase}-$$.bru"
+
+  local bodyFile="$dir/body-$$.json"
+  printf '%s\n' "$newBody" > "$bodyFile" || return 1
+
+  awk -v bodyFile="$bodyFile" "$bruBlockDepthAwkFunc"'
+    BEGIN { inBody = 0; depth = 0 }
+    !inBody && /^[ \t]*body:json[ \t]*\{/ {
+      print "body:json {"
+      while ((getline line < bodyFile) > 0) print "  " line
+      close(bodyFile)
+      inBody = 1
+      depth = 1
+      next
+    }
+    inBody {
+      depthAfterLine($0)
+      if (depth <= 0) { print "}"; inBody = 0 }
+      next
+    }
+    { print }
+  ' "$collection/$request" > "$tmp" || { rm -f "$bodyFile"; return 1; }
+
+  rm -f "$bodyFile"
+
+  printf '%s\n' "${tmp#$collection/}"
+}
