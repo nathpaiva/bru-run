@@ -71,13 +71,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 resolved="$(bruResolveProject "$projectName" "$branchName")" || exit 1
-namespace="${resolved%%$'\t'*}"
-rest="${resolved#*$'\t'}"
-collection="${rest%%$'\t'*}"
-rest="${rest#*$'\t'}"
-envHelper="${rest%%$'\t'*}"
-rest="${rest#*$'\t'}"
-protectedEnvs="${rest%%$'\t'*}"
-chainedVarsFile="${rest#*$'\t'}"
+bruFieldsOf "$resolved"
 
 bruRun "$collection" "$envHelper" "$protectedEnvs" "$chainedVarsFile" "${args[@]}"
