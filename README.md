@@ -119,4 +119,4 @@ skill instance to add.
 ## Status
 
 v1 in progress. See [issue #1](https://github.com/nathpaiva/bru-run/issues/1)
-and `docs/superpowers/specs/2026-08-09-bru-run-design.md` for the full design.
+for the full design.

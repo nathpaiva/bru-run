@@ -23,8 +23,8 @@ native associative arrays (`declare -A`) are used in exactly one place
 every other function also uses bash 4+ syntax (`${var,,}`, `mapfile`) with
 no 3.2-compatible equivalent worth writing for a single call site. Don't
 "helpfully" downgrade syntax to run on 3.2 — this was a deliberate choice,
-made and documented in
-[docs/superpowers/specs/2026-08-26-bru-run-bash-port-design.md](docs/superpowers/specs/2026-08-26-bru-run-bash-port-design.md).
+made when porting from zsh to bash in
+[issue #4](https://github.com/nathpaiva/bru-run/issues/4).
 
 **This has a real cost on macOS.** Apple has shipped bash 3.2 by default
 since 2007 (GPLv3 licensing, not neglect) and never updates it. Every macOS
@@ -54,7 +54,6 @@ version floor — this repo has now hit that gap twice, once per shell.
 - `examples/pompom-time/` — a fake collection used to prove the design end
   to end. Invented endpoints only. Never add real data here, even
   gitignored.
-- `docs/superpowers/specs/` — design docs for planned or completed work.
 
 ## `.bru-run.yml` — the per-project config
 
