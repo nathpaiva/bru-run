@@ -393,8 +393,7 @@ function bruEnsureEnvFile() {
 # ---------------------------------------------------------------------------
 
 # List a collection's request paths, one per line, sorted. folder.bru is
-# Bruno's own folder-settings file, not a request — excluded by default;
-# pass --all to keep it (bruList wants requests only too, same default).
+# Bruno's own folder-settings file, not a request — always excluded.
 function bruListRequests() {
   local collection="$1"
   ( cd "$collection" && find requests -name '*.bru' -not -name 'folder.bru' | sort )
@@ -694,21 +693,40 @@ typeset -g -r bruBlockDepthAwkFunc='
 '
 
 # Print the inner lines of a `<blockName> { ... }` block from a .bru file —
-# leading indentation stripped, closing brace excluded. Prints nothing (and
-# fails) when the block isn't found. Read-only: never touches the file.
+# the block's own indentation stripped, closing brace excluded. Prints
+# nothing (and fails) when the block isn't found. Read-only: never touches
+# the file.
+#
+# Only the indent level the block's first content line has is removed from
+# every inner line — not every leading whitespace character, and not the
+# open line's own indent (a `docs {` at column 0 tells us nothing about how
+# far in its content is indented; the standard .bru style indents block
+# content 2 spaces regardless of the block-open line's own column). A
+# blanket strip would flatten any indentation an author wrote on purpose
+# inside the block (a nested list, an indented example) — the bug this
+# replaced: the old bruDocs stripped a hardcoded 2 spaces, preserving
+# anything past that; a naive `sed 's/^[ \t]*//'` strips everything.
 function bruExtractBlock() {
   local file="$1" blockName="$2"
   [[ -f "$file" ]] || return 1
 
   awk -v blockName="$blockName" "$bruBlockDepthAwkFunc"'
-    BEGIN { inBlock = 0; depth = 0 }
+    BEGIN { inBlock = 0; depth = 0; baseIndent = -1 }
     !inBlock && $0 ~ ("^[ \t]*" blockName "[ \t]*\\{") { inBlock = 1; depth = 1; next }
     inBlock {
       depthAfterLine($0)
       if (depth <= 0) { inBlock = 0; next }
-      print
+      if (baseIndent < 0 && $0 !~ /^[ \t]*$/) {
+        match($0, /^[ \t]*/)
+        baseIndent = RLENGTH
+      }
+      if (baseIndent >= 0 && $0 ~ ("^[ \t]{" baseIndent "}")) {
+        print substr($0, baseIndent + 1)
+      } else {
+        print
+      }
     }
-  ' "$file" | sed 's/^[ \t]*//'
+  ' "$file"
 }
 
 # Rewrite a request's body:json block into a temp .bru inside the collection,
