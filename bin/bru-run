@@ -9,6 +9,47 @@ set -e
 SCRIPT_DIR="${0:A:h}"
 source "$SCRIPT_DIR/../lib/bru-run.zsh"
 
+# `bru-run --help` / `-h` — print usage and exit. Checked before init and
+# before any project resolution, so it works with no .bru-run.yml present.
+if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+  cat <<'EOF'
+bru-run — run Bruno collection requests from any project
+
+USAGE
+  bru-run <request> [--env <name>] [--show] [--confirm]
+  bru-run --list | --docs <request> | --envs
+  bru-run --set key=value [--set key2=value2 ...] <request> ...
+  bru-run --data '{"...json..."}' <request> ...
+  bru-run --project <namespace> [--branch <name>] <request> ...
+  bru-run init
+
+DISCOVERY
+  --list                list all requests in the collection
+  --docs <request>      show a request's docs block
+  --envs                list environment names
+
+RUN
+  --env <name>          environment to run against
+  --show                print the response body
+  --confirm              required to run a protected env (see protected_envs)
+
+EDIT THE PAYLOAD (before sending — never touches the saved .bru file)
+  --set key=value        change one field; key is a path into params.data
+                          ("$.foo" addresses the document root), repeatable
+  --data '{"a":1}'       merge a whole JSON object into params.data
+
+CROSS-PROJECT
+  --project <namespace>  run against another project's collection
+  --branch <name>        use that git worktree's own .bru-run.yml
+
+SETUP
+  init                    write a .bru-run.yml in the current directory
+
+More: README.md, skill/SKILL.md
+EOF
+  exit 0
+fi
+
 # `bru-run init` — write a .bru-run.yml in the current directory.
 if [[ "$1" == "init" ]]; then
   if [[ -f "$PWD/.bru-run.yml" ]]; then

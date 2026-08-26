@@ -20,6 +20,8 @@ to one API.
 Point it at a project's Bruno collection with a `.bru-run.yml` file, and run
 requests by search term or path, from any directory:
 
+Run `bru-run --help` (or `-h`) any time for a quick reference of every flag.
+
 ```bash
 bru-run item list --env dev --show
 bru-run --list
