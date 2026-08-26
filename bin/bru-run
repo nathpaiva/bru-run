@@ -51,13 +51,18 @@ if [[ "$1" == "init" ]]; then
   exit 0
 fi
 
-# --project <name> takes it out of the positional args before resolution;
-# everything else passes straight through to bruRun.
+# --project <name> and --branch <name> both take themselves out of the
+# positional args before resolution; everything else passes straight
+# through to bruRun.
 projectName=""
+branchName=""
 args=()
 while [[ $# -gt 0 ]]; do
   if [[ "$1" == "--project" ]]; then
     projectName="$2"
+    shift 2
+  elif [[ "$1" == "--branch" ]]; then
+    branchName="$2"
     shift 2
   else
     args+=("$1")
@@ -65,7 +70,7 @@ while [[ $# -gt 0 ]]; do
   fi
 done
 
-resolved="$(bruResolveProject "$projectName")" || exit 1
+resolved="$(bruResolveProject "$projectName" "$branchName")" || exit 1
 namespace="${resolved%%$'\t'*}"
 rest="${resolved#*$'\t'}"
 collection="${rest%%$'\t'*}"
