@@ -53,7 +53,30 @@ env_helper: ~/.bru-run/my-project
 
 From then on, `bru-run` finds this config by walking up from wherever it's
 run, the same way git finds `.git`. From outside the project:
-`bru-run --project my-project ...`.
+`bru-run --project my-project ...` (or `-p my-project`).
+
+### Running against a git worktree
+
+A worktree can have its own in-progress collection. `--branch` (`-b`) uses it
+without `cd`-ing there, looking under `.claude/worktrees/<branch-slug>/` at the
+main checkout's root, where `<branch-slug>` is the branch name with every `/`
+replaced by `-`:
+
+```bash
+bru-run -p my-project -b my-branch --list
+```
+
+To see which worktrees exist and which ones are ready, use `--branches` (`-B`):
+
+```bash
+$ bru-run -p my-project -B
+👩‍💻 worktrees for my-project
+  my-branch        ✓ has .bru-run.yml
+  another-branch   ✗ missing
+```
+
+A worktree needs its own `.bru-run.yml` before `-b` can use it. `bru-run` never
+creates it — both `-B` and a failed `-b` print the `cp` command to run.
 
 ### Protecting an environment
 
