@@ -68,8 +68,12 @@ copy and leave the original alone.
 
 **3. Never invent a request path or a flag.** Run `bru-run --list` and read
 it. The flags are `--env`, `--envs`, `--list`, `--docs`, `--show`, `--set`,
-`--data`, `--local`, `--project`, `--confirm`, `--branch`. The only
-subcommand is `init`. There are no others.
+`--data`, `--local`, `--project` (`-p`), `--confirm`, `--branch` (`-b`),
+`--branches` (`-B`). The only subcommand is `init`. There are no others.
+
+When a flag in that list does not seem to fit, run `bru-run --help` and read
+it before telling the user something is not possible. The list above is the
+allowlist, not the manual — `--help` carries what each flag takes.
 
 **4. Ask before assuming which environment or project is safe to call.**
 A project can list its own sensitive environments (e.g. `prod`) in
@@ -93,10 +97,19 @@ Runs from any directory inside a project with a `.bru-run.yml` above it.
 From outside the project: `bru-run --project <namespace> <request> --env dev`.
 
 Running against a git worktree's own in-progress collection, without `cd`-ing
-there: `bru-run --branch <branch-name> --list` (combine with `--project` when
-also outside the main checkout). This only works once that worktree has its
-own `.bru-run.yml` — if it doesn't, `bru-run` says so and names the path it
-expected.
+there: `bru-run -b <branch-name> --list` (add `-p <namespace>` when also
+outside the main checkout). Never tell the user to `cd` into a worktree to
+reach its collection — that is the exact thing `-b` exists to avoid.
+
+To see which worktrees exist and which ones `-b` can already use:
+
+```bash
+bru-run -p app-api -B
+```
+
+A worktree only works with `-b` once it has its own `.bru-run.yml`. Both `-B`
+and a failed `-b` print the `cp` command that fixes it — pass that command on
+to the user rather than writing the file yourself.
 
 If the shell answers `command not found: bru-run`, the CLI isn't installed
 or linked on this machine yet.

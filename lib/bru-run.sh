@@ -256,16 +256,11 @@ bruLookupProject() {
   grep -m1 -E "^${namespacePattern}:" "$BRU_RUN_REGISTRY" | sed -E "s/^${namespacePattern}:[[:space:]]*//"
 }
 
-# Resolve which project to run against: --project <name> forces a registry
-# lookup; otherwise walk up from cwd. --branch <name> then swaps in that
-# worktree's own .bru-run.yml instead of the one just resolved — see
-# bruResolveWorktreeConfig. Registers the *main* project either way — never
-# the worktree's config — so the registry always answers a later --project
-# with the main checkout, not whichever worktree was resolved last. Prints
-# "namespace\tcollection\tenvHelper\tprotectedEnvs\tchainedVarsFile" on
-# success.
-bruResolveProject() {
-  local projectName="$1" branchName="$2"
+# Find a project's main .bru-run.yml: --project <name> forces a registry
+# lookup; otherwise walk up from cwd. Warns when the two disagree. Prints
+# the config file path — no loading, no registering.
+bruFindMainConfig() {
+  local projectName="$1"
   local mainConfigFile
 
   if [[ -n "$projectName" ]]; then
@@ -286,6 +281,22 @@ bruResolveProject() {
       return 1
     }
   fi
+
+  printf '%s\n' "$mainConfigFile"
+}
+
+# Resolve which project to run against. --branch <name> swaps in that
+# worktree's own .bru-run.yml instead of the main one — see
+# bruResolveWorktreeConfig. Registers the *main* project either way — never
+# the worktree's config — so the registry always answers a later --project
+# with the main checkout, not whichever worktree was resolved last. Prints
+# "namespace\tcollection\tenvHelper\tprotectedEnvs\tchainedVarsFile" on
+# success.
+bruResolveProject() {
+  local projectName="$1" branchName="$2"
+  local mainConfigFile
+
+  mainConfigFile="$(bruFindMainConfig "$projectName")" || return 1
 
   local mainResolved
   mainResolved="$(bruLoadProjectConfig "$mainConfigFile")" || return 1
@@ -316,11 +327,79 @@ bruResolveWorktreeConfig() {
   local worktreeConfigFile="${mainConfigFile%/*}/.claude/worktrees/${worktreeSlug}/.bru-run.yml"
 
   if [[ ! -f "$worktreeConfigFile" ]]; then
-    echo "👩‍💻 no .bru-run.yml at .claude/worktrees/${worktreeSlug} — copy it from the main checkout first" >&2
+    # Both paths are already known here, so print the copy command ready to
+    # paste instead of only naming the problem. Copying is left to the caller:
+    # a run command should not write files into a worktree on its own.
+    echo "👩‍💻 no .bru-run.yml at .claude/worktrees/${worktreeSlug}" >&2
+    echo "" >&2
+    echo "run this to copy it from the main checkout:" >&2
+    echo "  cp ${mainConfigFile} \\" >&2
+    echo "     ${worktreeConfigFile}" >&2
     return 1
   fi
 
   printf '%s\n' "$worktreeConfigFile"
+}
+
+# List the worktrees a project has, and whether each one can be used with
+# --branch. A worktree without its own .bru-run.yml is listed too, marked
+# as missing, because that is exactly the one the user needs to fix.
+bruListWorktrees() {
+  local projectName="$1"
+  local mainConfigFile
+
+  mainConfigFile="$(bruFindMainConfig "$projectName")" || return 1
+
+  local mainResolved namespace
+  mainResolved="$(bruLoadProjectConfig "$mainConfigFile")" || return 1
+  namespace="${mainResolved%%$'\t'*}"
+  # Same as a run: seeing a project by walking up from $PWD is what makes
+  # it reachable by name later, so --branches has to register it too.
+  bruRegisterProject "$namespace" "$mainConfigFile"
+
+  local rootDir="${mainConfigFile%/*}"
+  local worktreeDir="$rootDir/.claude/worktrees"
+
+  if [[ ! -d "$worktreeDir" ]]; then
+    echo "👩‍💻 no worktrees for $namespace — nothing at $worktreeDir" >&2
+    return 1
+  fi
+
+  # Widest name first, so the ✓/✗ column lines up.
+  local entry name width=0
+  local names=()
+  for entry in "$worktreeDir"/*/; do
+    [[ -d "$entry" ]] || continue
+    name="${entry%/}"
+    name="${name##*/}"
+    names+=("$name")
+    (( ${#name} > width )) && width=${#name}
+  done
+
+  if (( ${#names[@]} == 0 )); then
+    echo "👩‍💻 no worktrees for $namespace — nothing at $worktreeDir" >&2
+    return 1
+  fi
+
+  echo "👩‍💻 worktrees for $namespace"
+  local missing=0
+  for name in "${names[@]}"; do
+    if [[ -f "$worktreeDir/$name/.bru-run.yml" ]]; then
+      printf '  %-*s  ✓ has .bru-run.yml\n' "$width" "$name"
+    else
+      printf '  %-*s  ✗ missing\n' "$width" "$name"
+      missing=1
+    fi
+  done
+
+  if (( missing )); then
+    echo ""
+    echo "a worktree marked ✗ needs its own config before --branch can use it:"
+    echo "  cp ${mainConfigFile} \\"
+    echo "     ${worktreeDir}/<name>/.bru-run.yml"
+  fi
+
+  return 0
 }
 
 # ---------------------------------------------------------------------------
