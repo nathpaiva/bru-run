@@ -40,7 +40,8 @@ USAGE
   bru-run --list | --docs <request> | --envs
   bru-run --set key=value [--set key2=value2 ...] <request> ...
   bru-run --data '{"...json..."}' <request> ...
-  bru-run --project <namespace> [--branch <name>] <request> ...
+  bru-run -p <namespace> [-b <name>] <request> ...
+  bru-run -p <namespace> --branches
   bru-run init
 
 DISCOVERY
@@ -59,8 +60,10 @@ EDIT THE PAYLOAD (before sending — never touches the saved .bru file)
   --data '{"a":1}'       merge a whole JSON object into params.data
 
 CROSS-PROJECT
-  --project <namespace>  run against another project's collection
-  --branch <name>        use that git worktree's own .bru-run.yml
+  --project, -p <name>   run against another project's collection
+  --branch, -b <name>    use that git worktree's own .bru-run.yml
+  --branches, -B         list the project's worktrees and which ones
+                          have a .bru-run.yml
 
 SETUP
   init                    write a .bru-run.yml in the current directory
@@ -116,22 +119,50 @@ fi
 
 # --project <name> and --branch <name> both take themselves out of the
 # positional args before resolution; everything else passes straight
-# through to bruRun.
+# through to bruRun. --branches asks for a listing instead of a run, so it
+# is a flag on its own and takes no value.
 projectName=""
 branchName=""
+listBranches=0
 args=()
 while [[ $# -gt 0 ]]; do
-  if [[ "$1" == "--project" ]]; then
+  if [[ "$1" == "--project" || "$1" == "-p" ]]; then
+    if (( $# < 2 )); then
+      echo "👩‍💻 $1 needs a project name" >&2
+      exit 1
+    fi
     projectName="$2"
     shift 2
-  elif [[ "$1" == "--branch" ]]; then
+  elif [[ "$1" == "--branch" || "$1" == "-b" ]]; then
+    if (( $# < 2 )); then
+      echo "👩‍💻 $1 needs a branch name — see 'bru-run --branches'" >&2
+      exit 1
+    fi
     branchName="$2"
     shift 2
+  elif [[ "$1" == "--branches" || "$1" == "-B" ]]; then
+    listBranches=1
+    shift
   else
     args+=("$1")
     shift
   fi
 done
+
+# --branches only needs the project's main config, so it runs before the
+# worktree config is resolved — the whole point is to show which worktrees
+# have one and which do not.
+if (( listBranches )); then
+  # Listing and running are different jobs. Silently dropping a request here
+  # would make a -B-for--b typo look like a successful run.
+  if (( ${#args[@]} )); then
+    echo "👩‍💻 --branches lists worktrees and runs nothing — got extra args: ${args[*]}" >&2
+    echo "👩‍💻 did you mean -b <name> to pick one?" >&2
+    exit 1
+  fi
+  bruListWorktrees "$projectName"
+  exit $?
+fi
 
 resolved="$(bruResolveProject "$projectName" "$branchName")" || exit 1
 bruFieldsOf "$resolved"
