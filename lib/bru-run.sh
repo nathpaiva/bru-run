@@ -1008,12 +1008,14 @@ bruRun() {
       body="$(bruPatchBody "$collection" "$body" "${sets[@]}")" || return 1
     fi
 
-    # Restore in reverse order: with nested/overlapping substrings this
-    # doesn't matter here (each token is a unique, unambiguous string that
-    # cannot appear inside another token), but restoring highest-numbered
-    # first keeps the loop symmetric with the swap-out loop above and
-    # avoids ever depending on token-string containment being safe by
-    # accident.
+    # Restore in reverse order — required, not stylistic: token(i) can be a
+    # literal substring of token(j) whenever i < j shares the same decimal
+    # prefix (e.g. token(1)="9000000011" is a substring of
+    # token(11)="90000000111"). Restoring low-numbered tokens first would
+    # let a later substring match land inside an already-restored
+    # higher-numbered token's replacement text, corrupting it. Reverse
+    # order (highest first) means once a token is restored, no remaining
+    # un-restored token's text can appear inside it.
     local i
     for (( i = ${#varTokens[@]} - 1; i >= 0; i-- )); do
       body="${body//"${varTokens[$i]}"/${varLiterals[$i]}}"
