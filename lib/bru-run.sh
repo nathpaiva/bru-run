@@ -973,16 +973,28 @@ bruRun() {
     # the body too — and jq only accepts a bare, unquoted value that looks
     # like a JSON number. A named token there ("quantity": __BRU_VAR_1__)
     # still fails jq -e . with "Invalid numeric literal", which is the
-    # exact failure this fix exists to remove. The fixed 9-digit prefix
-    # keeps the token away from small real numbers already in the body
-    # (page numbers, counts) while staying a valid JSON number in both the
-    # quoted and unquoted position.
+    # exact failure this fix exists to remove. The 9-digit prefix makes the
+    # token unlikely to collide with small real numbers already in the
+    # body (page numbers, counts) while staying a valid JSON number in
+    # both the quoted and unquoted position — but "unlikely" isn't a
+    # guarantee, so the loop below extends the token further whenever it
+    # does collide with something already in the body.
     local varTokens=() varLiterals=()
     local varMatch varIndex=0
     while IFS= read -r varMatch; do
       [[ -z "$varMatch" ]] && continue
       varIndex=$(( varIndex + 1 ))
       local varToken="90000000${varIndex}1"
+      # The 9-digit prefix keeps the token away from small real numbers,
+      # but a body can still contain that exact digit run already — a real
+      # numeric id, or the same digits inside a longer string. The // in
+      # the restore loop below is replace-all, so any such collision would
+      # corrupt that literal into a {{var}} placeholder. Extend the token
+      # with another leading 9 until it provably doesn't occur anywhere in
+      # the body yet.
+      while [[ "$body" == *"$varToken"* ]]; do
+        varToken="9${varToken}"
+      done
       varTokens+=("$varToken")
       varLiterals+=("$varMatch")
       body="${body/"$varMatch"/$varToken}"
