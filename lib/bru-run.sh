@@ -1099,6 +1099,31 @@ bruRun() {
       body="$(bruPatchBody "$collection" "$body" "${sets[@]}")" || return 1
     fi
 
+    # Each token was unique against $body at swap-out time (see the
+    # collision-avoidance loop above), so it occurred exactly once right
+    # after the swap. --data and bruPatchBody insert the user's actual
+    # --set/--data values into the body — if a value happens to contain a
+    # token's exact digits (a realistic case: any 10+ digit id, trace id,
+    # or millisecond timestamp), that occurrence count goes up. The
+    # restore loop below is a global replace with no way to tell "the
+    # token in its original position" from "the same digits that landed
+    # inside a value by coincidence" — so if the count changed, restoring
+    # now would silently corrupt the user's own value into a {{var}}
+    # literal instead of leaving it as typed. Abort instead of guessing:
+    # matches this codebase's existing philosophy (bruPatchBody itself
+    # fails loudly with "could not set (bad path?)" rather than silently
+    # doing the wrong thing).
+    local tokenIndex
+    for (( tokenIndex = 0; tokenIndex < ${#varTokens[@]}; tokenIndex++ )); do
+      local checkToken="${varTokens[$tokenIndex]}"
+      local strippedBody="${body//"$checkToken"/}"
+      local occurrences=$(( (${#body} - ${#strippedBody}) / ${#checkToken} ))
+      if (( occurrences > 1 )); then
+        echo "👩‍💻 a --set/--data value collides with an internal token — try a different value (this is rare: it means the value contains the exact digits $checkToken)" >&2
+        return 1
+      fi
+    done
+
     # Restore in reverse order — required, not stylistic: token(i) can be a
     # literal substring of token(j) whenever i < j shares the same decimal
     # prefix (e.g. token(1)="9000000011" is a substring of
