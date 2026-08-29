@@ -21,7 +21,9 @@ body:json {
     "method": "item.create",
     "params": {
       "data": {
-        "name": "example item"
+        "name": "example item",
+        "quantity": {{defaultQuantity}},
+        "note": "ships from {{warehouseCode}}"
       }
     }
   }
