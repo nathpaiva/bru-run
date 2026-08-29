@@ -667,6 +667,28 @@ bruCaptureVars() {
 # Payload patching
 # ---------------------------------------------------------------------------
 
+# Check whether a candidate swap-out token appears in the request body, in
+# the raw --data JSON string, or in the value half of any --set key=value
+# pair. Used to pick a token that's guaranteed absent from everything about
+# to be written into the body, not just the body as it stands right now —
+# see the comment above the guid-token and var-token extension loops in
+# bruRun for why the body alone isn't enough.
+bruTokenCollides() {
+  local token="$1" body="$2" dataJson="$3"
+  shift 3
+
+  [[ "$body" == *"$token"* ]] && return 0
+  [[ -n "$dataJson" && "$dataJson" == *"$token"* ]] && return 0
+
+  local pair value
+  for pair in "$@"; do
+    value="${pair#*=}"
+    [[ "$value" == *"$token"* ]] && return 0
+  done
+
+  return 1
+}
+
 # Build a jq filter from --set key=value pairs and apply it to a JSON body.
 #
 # Paths are relative to params.data (`coupon.id` -> params.data.coupon.id),
@@ -1028,8 +1050,24 @@ bruRun() {
     # would survive untouched by *that* swap — but running guid first keeps
     # the two swaps independent and easy to reason about, matching the
     # order this code already used before this fix.
+    #
+    # The token must be absent from both the body AND any value about to be
+    # patched in by --set/--data — not just the body. A token only unique
+    # against the body can still collide once bruPatchBody or the --data
+    # merge writes a matching value into the body (e.g. a --set value that
+    # happens to equal or contain the token's exact text), and the restore
+    # step below is a global replace with no way to tell "the original
+    # token" from "the same text that landed there by coincidence" — so an
+    # after-the-fact count check can't catch the case where the token's own
+    # original occurrence gets overwritten by the patch. Picking a token
+    # that's guaranteed clear of the patch values up front avoids the whole
+    # class of collision, both this overwrite case and the simpler
+    # append/insert case.
     local guidToken="__BRU_TMPL_GUID__"
     local guidLiteral='{{$guid}}'
+    while bruTokenCollides "$guidToken" "$body" "$dataJson" "${sets[@]}"; do
+      guidToken="${guidToken}_"
+    done
     body="${body//$guidLiteral/$guidToken}"
 
     # Bruno writes unquoted template variables for non-string values
@@ -1065,13 +1103,19 @@ bruRun() {
       varIndex=$(( varIndex + 1 ))
       local varToken="90000000${varIndex}1"
       # The 9-digit prefix keeps the token away from small real numbers,
-      # but a body can still contain that exact digit run already — a real
-      # numeric id, or the same digits inside a longer string. The // in
-      # the restore loop below is replace-all, so any such collision would
-      # corrupt that literal into a {{var}} placeholder. Extend the token
-      # with another leading 9 until it provably doesn't occur anywhere in
-      # the body yet.
-      while [[ "$body" == *"$varToken"* ]]; do
+      # but a body — or an incoming --set/--data value — can still contain
+      # that exact digit run already: a real numeric id, a trace id, a
+      # millisecond timestamp, or the same digits inside a longer string.
+      # The // in the restore loop below is replace-all, so any such
+      # collision would corrupt that literal into a {{var}} placeholder —
+      # including the case where --set/--data overwrites the very field
+      # that held this token, since then the token's original occurrence
+      # is gone and the incoming value's digits become the only occurrence
+      # the restore loop can see. Checking the body alone can't catch that
+      # overwrite case; checking the values about to be patched in, too,
+      # can. Extend the token with another leading 9 until it provably
+      # doesn't occur in the body OR in any --set/--data value yet.
+      while bruTokenCollides "$varToken" "$body" "$dataJson" "${sets[@]}"; do
         varToken="9${varToken}"
       done
       varTokens+=("$varToken")
@@ -1099,30 +1143,11 @@ bruRun() {
       body="$(bruPatchBody "$collection" "$body" "${sets[@]}")" || return 1
     fi
 
-    # Each token was unique against $body at swap-out time (see the
-    # collision-avoidance loop above), so it occurred exactly once right
-    # after the swap. --data and bruPatchBody insert the user's actual
-    # --set/--data values into the body — if a value happens to contain a
-    # token's exact digits (a realistic case: any 10+ digit id, trace id,
-    # or millisecond timestamp), that occurrence count goes up. The
-    # restore loop below is a global replace with no way to tell "the
-    # token in its original position" from "the same digits that landed
-    # inside a value by coincidence" — so if the count changed, restoring
-    # now would silently corrupt the user's own value into a {{var}}
-    # literal instead of leaving it as typed. Abort instead of guessing:
-    # matches this codebase's existing philosophy (bruPatchBody itself
-    # fails loudly with "could not set (bad path?)" rather than silently
-    # doing the wrong thing).
-    local tokenIndex
-    for (( tokenIndex = 0; tokenIndex < ${#varTokens[@]}; tokenIndex++ )); do
-      local checkToken="${varTokens[$tokenIndex]}"
-      local strippedBody="${body//"$checkToken"/}"
-      local occurrences=$(( (${#body} - ${#strippedBody}) / ${#checkToken} ))
-      if (( occurrences > 1 )); then
-        echo "👩‍💻 a --set/--data value collides with an internal token — try a different value (this is rare: it means the value contains the exact digits $checkToken)" >&2
-        return 1
-      fi
-    done
+    # No post-patch collision check needed here: every var token and the
+    # guid token were already chosen (above) to be absent from both the
+    # body AND every --set/--data value about to be patched in, so none of
+    # them can have gained a coincidental second occurrence from the patch.
+    # The restore loop below is therefore safe to run unconditionally.
 
     # Restore in reverse order — required, not stylistic: token(i) can be a
     # literal substring of token(j) whenever i < j shares the same decimal
