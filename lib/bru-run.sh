@@ -1020,9 +1020,64 @@ bruRun() {
       return 1
     fi
 
+    # Bruno's own dynamic variables ({{$guid}}, {{$randomInt}}, ...) always
+    # start with $ inside the braces — swapped out first and separately so
+    # the user-variable swap below (which matches any {{name}}) can never
+    # claim one of these. If the user-variable swap ran first on an
+    # unswapped {{$guid}}, the $ is outside its character class so {{$guid}}
+    # would survive untouched by *that* swap — but running guid first keeps
+    # the two swaps independent and easy to reason about, matching the
+    # order this code already used before this fix.
     local guidToken="__BRU_TMPL_GUID__"
     local guidLiteral='{{$guid}}'
     body="${body//$guidLiteral/$guidToken}"
+
+    # Bruno writes unquoted template variables for non-string values
+    # ("account_id": {{accountId}}), which is valid Bruno syntax and
+    # invalid JSON — jq -e . below would reject the body before any patch
+    # ever runs, on almost every real request, since template variables are
+    # the normal case. bru-run never resolves a variable's value (Bruno
+    # does that later via --env-file), so each {{name}} is swapped for a
+    # unique numbered token just long enough to pass the JSON check and
+    # survive the jq-based patch, then swapped back to its original literal
+    # text below. Numbered per occurrence, not per key: the same variable
+    # can appear twice, and a variable can be a substring of a larger
+    # string ("{{baseUrl}}/home"), so a shared or fixed-value placeholder
+    # (e.g. "0") would either mis-restore a repeated variable or collide
+    # with a genuine literal already in the body.
+    #
+    # The token itself must be all-digits, not a __BRU_VAR_N__-style name:
+    # an unquoted template variable ("quantity": {{defaultQuantity}}) has
+    # no surrounding quotes to swap back in, so the token lands unquoted in
+    # the body too — and jq only accepts a bare, unquoted value that looks
+    # like a JSON number. A named token there ("quantity": __BRU_VAR_1__)
+    # still fails jq -e . with "Invalid numeric literal", which is the
+    # exact failure this fix exists to remove. The 9-digit prefix makes the
+    # token unlikely to collide with small real numbers already in the
+    # body (page numbers, counts) while staying a valid JSON number in
+    # both the quoted and unquoted position — but "unlikely" isn't a
+    # guarantee, so the loop below extends the token further whenever it
+    # does collide with something already in the body.
+    local varTokens=() varLiterals=()
+    local varMatch varIndex=0
+    while IFS= read -r varMatch; do
+      [[ -z "$varMatch" ]] && continue
+      varIndex=$(( varIndex + 1 ))
+      local varToken="90000000${varIndex}1"
+      # The 9-digit prefix keeps the token away from small real numbers,
+      # but a body can still contain that exact digit run already — a real
+      # numeric id, or the same digits inside a longer string. The // in
+      # the restore loop below is replace-all, so any such collision would
+      # corrupt that literal into a {{var}} placeholder. Extend the token
+      # with another leading 9 until it provably doesn't occur anywhere in
+      # the body yet.
+      while [[ "$body" == *"$varToken"* ]]; do
+        varToken="9${varToken}"
+      done
+      varTokens+=("$varToken")
+      varLiterals+=("$varMatch")
+      body="${body/"$varMatch"/$varToken}"
+    done < <(grep -oE '\{\{[A-Za-z_][^}]*\}\}' <<< "$body")
 
     if ! jq -e . <<< "$body" >/dev/null 2>&1; then
       echo "👩‍💻 body:json in $request is not valid JSON — cannot patch" >&2
@@ -1043,6 +1098,19 @@ bruRun() {
     if (( ${#sets[@]} )); then
       body="$(bruPatchBody "$collection" "$body" "${sets[@]}")" || return 1
     fi
+
+    # Restore in reverse order — required, not stylistic: token(i) can be a
+    # literal substring of token(j) whenever i < j shares the same decimal
+    # prefix (e.g. token(1)="9000000011" is a substring of
+    # token(11)="90000000111"). Restoring low-numbered tokens first would
+    # let a later substring match land inside an already-restored
+    # higher-numbered token's replacement text, corrupting it. Reverse
+    # order (highest first) means once a token is restored, no remaining
+    # un-restored token's text can appear inside it.
+    local i
+    for (( i = ${#varTokens[@]} - 1; i >= 0; i-- )); do
+      body="${body//"${varTokens[$i]}"/${varLiterals[$i]}}"
+    done
 
     body="${body//$guidToken/$guidLiteral}"
 
