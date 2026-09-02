@@ -115,11 +115,17 @@ After each run, `bru-run` prints the names it saved, never the values. What
 the expressions match is specific to one API's response shapes, so bru-run
 ships no map of its own — see `examples/pompom-time/bruno/chained-vars.tsv`.
 
-## Install (local, for now)
+## Install
 
 ```bash
-npm link
+npm install -g bru-run
 ```
+
+The npm package ships only the script. The runtime tools in **Requirements**
+above (`bash` 4+, `jq`, `bru`, and optionally `fzf`) still have to be on your
+`PATH`.
+
+To hack on bru-run itself, clone the repo and run `npm link` instead.
 
 ## Example
 
@@ -141,5 +147,5 @@ skill instance to add.
 
 ## Status
 
-v1 in progress. See [issue #1](https://github.com/nathpaiva/bru-run/issues/1)
-for the full design.
+Released, `1.0.0`. See [issue #1](https://github.com/nathpaiva/bru-run/issues/1)
+for the original design notes.
