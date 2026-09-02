@@ -9,7 +9,7 @@ Worktree: `.claude/worktrees/chore-39-bru-run-ci`
 
 | # | Branch | Branched from | Carries | Status |
 |---|--------|---------------|---------|--------|
-| 1 | `chore/39-bru-run-ci` | `main` | Everything | in progress |
+| 1 | `chore/39-bru-run-ci` | `main` | Everything | done |
 
 ## What is wrong
 
