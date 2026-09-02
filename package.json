@@ -2,8 +2,35 @@
   "name": "bru-run",
   "version": "1.0.0",
   "description": "Run Bruno collection requests from any project, from any directory.",
+  "keywords": [
+    "bruno",
+    "bruno-cli",
+    "api",
+    "api-testing",
+    "http-client",
+    "cli",
+    "bash"
+  ],
+  "homepage": "https://github.com/nathpaiva/bru-run#readme",
+  "bugs": {
+    "url": "https://github.com/nathpaiva/bru-run/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nathpaiva/bru-run.git"
+  },
+  "license": "MIT",
+  "author": "Nath Paiva",
   "bin": {
     "bru-run": "./bin/bru-run"
   },
-  "license": "MIT"
+  "files": [
+    "bin/",
+    "lib/",
+    "skill/"
+  ],
+  "scripts": {
+    "smoke": "cd examples/pompom-time && ../../bin/bru-run --list && ../../bin/bru-run --envs",
+    "prepublishOnly": "npm run smoke"
+  }
 }
