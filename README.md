@@ -117,13 +117,27 @@ ships no map of its own — see `examples/pompom-time/bruno/chained-vars.tsv`.
 
 ## Install
 
+Homebrew — also pulls in `jq` and a modern `bash`:
+
+```bash
+brew install nathpaiva/tap/bru-run
+```
+
+Or npm:
+
 ```bash
 npm install -g bru-run
 ```
 
-The npm package ships only the script. The runtime tools in **Requirements**
-above (`bash` 4+, `jq`, `bru`, and optionally `fzf`) still have to be on your
-`PATH`.
+Either way, the Bruno CLI (`bru`) still has to be on your `PATH` — it is not
+a Homebrew formula:
+
+```bash
+npm install -g @usebruno/cli
+```
+
+`fzf` is optional, only for the interactive pickers. With npm you also need
+`bash` 4+ and `jq` yourself (see **Requirements**).
 
 To hack on bru-run itself, clone the repo and run `npm link` instead.
 
