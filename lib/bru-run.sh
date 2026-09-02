@@ -68,6 +68,9 @@ export BRU_RUN_SECRETS_ROOT="${BRU_RUN_SECRETS_ROOT:-$HOME/.bru-run}"
 # like "foo.bar" must not act as "any char" and match "fooxbar" instead.
 bruEscapeRegex() {
   local s="$1"
+  # '\' is a single-quoted literal backslash; shellcheck misreads it as an
+  # attempt to escape a quote.
+  # shellcheck disable=SC1003
   local metaChars=('\' '^' '$' '.' '[' ']' '|' '(' ')' '*' '+' '?' '{' '}')
   local c
   for c in "${metaChars[@]}"; do
@@ -921,7 +924,7 @@ bruTempRequest() {
 
   rm -f "$bodyFile"
 
-  printf '%s\n' "${tmp#$collection/}"
+  printf '%s\n' "${tmp#"$collection"/}"
 }
 
 # ---------------------------------------------------------------------------
@@ -1123,6 +1126,8 @@ bruRun() {
     # class of collision, both this overwrite case and the simpler
     # append/insert case.
     local guidToken="__BRU_TMPL_GUID__"
+    # {{$guid}} is a literal Bruno template token, not a shell expansion.
+    # shellcheck disable=SC2016
     local guidLiteral='{{$guid}}'
     while bruTokenCollides "$guidToken" "$body" "$dataJson" "${sets[@]}"; do
       guidToken="${guidToken}_"
@@ -1239,10 +1244,10 @@ bruRun() {
   fi
 
   if [[ -n "$env" && -n "$protectedEnvsCsv" ]]; then
-    local protectedEnvs
-    IFS=',' read -ra protectedEnvs <<< "$protectedEnvsCsv"
+    local protectedEnvList
+    IFS=',' read -ra protectedEnvList <<< "$protectedEnvsCsv"
     local isProtected=0 pe
-    for pe in "${protectedEnvs[@]}"; do
+    for pe in "${protectedEnvList[@]}"; do
       [[ "$pe" == "$env" ]] && { isProtected=1; break; }
     done
     if (( isProtected )) && (( ! confirm )); then
@@ -1324,7 +1329,7 @@ bruList() {
 
     if [[ -z "$method" ]]; then
       method="$(grep -m1 -E '^(get|post|put|patch|delete|head|options)[[:space:]]*\{' \
-                "$collection/$f" | sed -E 's/[[:space:]]*\{.*//' | tr 'a-z' 'A-Z')"
+                "$collection/$f" | sed -E 's/[[:space:]]*\{.*//' | tr '[:lower:]' '[:upper:]')"
       [[ -z "$method" ]] && method="?"
     fi
 

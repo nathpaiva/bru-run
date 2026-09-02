@@ -27,6 +27,7 @@ while [[ -L "$SCRIPT_SRC" ]]; do
   [[ "$SCRIPT_SRC" != /* ]] && SCRIPT_SRC="$SCRIPT_DIR/$SCRIPT_SRC"
 done
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_SRC")" && pwd)"
+# shellcheck source=lib/bru-run.sh
 source "$SCRIPT_DIR/../lib/bru-run.sh"
 
 # `bru-run --help` / `-h` — print usage and exit. Checked before init and
@@ -167,4 +168,7 @@ fi
 resolved="$(bruResolveProject "$projectName" "$branchName")" || exit 1
 bruFieldsOf "$resolved"
 
+# bruFieldsOf populates collection/envHelper/protectedEnvs/chainedVarsFile via
+# printf -v, which shellcheck cannot see.
+# shellcheck disable=SC2154
 bruRun "$collection" "$envHelper" "$protectedEnvs" "$chainedVarsFile" "${args[@]}"

@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck
+        run: shellcheck -s bash bin/bru-run lib/bru-run.sh
+
+      - name: smoke test
+        run: |
+          cd examples/pompom-time
+          ../../bin/bru-run --list
+          ../../bin/bru-run --envs
