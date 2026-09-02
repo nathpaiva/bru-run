@@ -91,6 +91,30 @@ bruFindProjectConfig() {
   return 1
 }
 
+# True when a .bru-run.yml path is a worktree's own config: it sits directly
+# inside .claude/worktrees/<slug>/, where <slug> is a single path segment.
+# The <slug> must be one segment on purpose — an unanchored match would also
+# fire when some unrelated parent directory happens to be called
+# ".claude/worktrees", e.g. this repo being developed inside its own
+# worktree. See issue #34.
+bruConfigIsInWorktree() {
+  [[ "$1" =~ /\.claude/worktrees/[^/]+/\.bru-run\.yml$ ]]
+}
+
+# Given a .bru-run.yml path, print the checkout root the worktree convention
+# hangs off. For a worktree's own config that root is the part before
+# /.claude/worktrees/<slug>/; otherwise it is just the directory the file is
+# in. Used so a config found inside a worktree is never mistaken for the
+# project's main config — see issue #34.
+bruCheckoutRootOf() {
+  local configFile="$1"
+  if [[ "$configFile" =~ ^(.+)/\.claude/worktrees/[^/]+/\.bru-run\.yml$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  else
+    printf '%s\n' "${configFile%/*}"
+  fi
+}
+
 # Read one flat top-level key out of a .bru-run.yml. The file's shape is
 # fixed and shallow (namespace / collection / env_helper), so a small grep
 # does the job without adding a YAML parser dependency.
@@ -145,6 +169,7 @@ bruReadChainedVarsFile() {
 
   if [[ ! -f "$raw" ]]; then
     echo "👩‍💻 chained_vars file not found: $raw" >&2
+    echo "👩‍💻 variable chaining stays off until this file exists" >&2
     return 0
   fi
 
@@ -270,6 +295,18 @@ bruFindMainConfig() {
       return 1
     fi
 
+    # A registry entry that points inside .claude/worktrees/<slug>/ is
+    # poisoned (issue #34): --project must resolve to the main checkout, not
+    # whichever worktree registered itself last. Heal it in place.
+    if bruConfigIsInWorktree "$mainConfigFile"; then
+      local healedConfigFile
+      healedConfigFile="$(bruCheckoutRootOf "$mainConfigFile")/.bru-run.yml"
+      if [[ -f "$healedConfigFile" ]]; then
+        echo "👩‍💻 note: registry had '$projectName' pointing at a worktree; using the main checkout instead" >&2
+        mainConfigFile="$healedConfigFile"
+      fi
+    fi
+
     local cwdConfigFile
     cwdConfigFile="$(bruFindProjectConfig)"
     if [[ -n "$cwdConfigFile" && "$cwdConfigFile" != "$mainConfigFile" ]]; then
@@ -298,10 +335,24 @@ bruResolveProject() {
 
   mainConfigFile="$(bruFindMainConfig "$projectName")" || return 1
 
+  # Running from inside a worktree with no --branch quietly uses that
+  # worktree's collection. That is a real mode, but it has fooled someone
+  # into thinking they were calling the main collection (issue #34), so say
+  # it out loud.
+  if [[ -z "$branchName" ]] && bruConfigIsInWorktree "$mainConfigFile"; then
+    echo "👩‍💻 warning: this is a worktree's own collection ($mainConfigFile) — --branch was not passed" >&2
+  fi
+
   local mainResolved
   mainResolved="$(bruLoadProjectConfig "$mainConfigFile")" || return 1
   local namespace="${mainResolved%%$'\t'*}"
-  bruRegisterProject "$namespace" "$mainConfigFile"
+
+  # Register the checkout root, never a worktree's own config: a walk-up from
+  # inside a worktree finds the worktree's .bru-run.yml first, and writing
+  # that path to the registry is what poisons a later --project (issue #34).
+  local registrableConfigFile
+  registrableConfigFile="$(bruCheckoutRootOf "$mainConfigFile")/.bru-run.yml"
+  [[ -f "$registrableConfigFile" ]] && bruRegisterProject "$namespace" "$registrableConfigFile"
 
   local configFile="$mainConfigFile"
   if [[ -n "$branchName" ]]; then
@@ -320,11 +371,15 @@ bruResolveProject() {
 # changes without cd-ing there first. Matches the folder-naming convention
 # Nath's own worktree-management tooling already uses: the branch name with
 # every / replaced by -, under .claude/worktrees/ at the main checkout's
-# root (the directory the resolved .bru-run.yml lives in).
+# root. bruCheckoutRootOf keeps that root correct even when handed a config
+# that already sits inside a worktree, so a wrong input becomes a right path
+# instead of a doubled one (issue #34).
 bruResolveWorktreeConfig() {
   local mainConfigFile="$1" branchName="$2"
   local worktreeSlug="${branchName//\//-}"
-  local worktreeConfigFile="${mainConfigFile%/*}/.claude/worktrees/${worktreeSlug}/.bru-run.yml"
+  local checkoutRoot
+  checkoutRoot="$(bruCheckoutRootOf "$mainConfigFile")"
+  local worktreeConfigFile="${checkoutRoot}/.claude/worktrees/${worktreeSlug}/.bru-run.yml"
 
   if [[ ! -f "$worktreeConfigFile" ]]; then
     # Both paths are already known here, so print the copy command ready to
@@ -333,7 +388,7 @@ bruResolveWorktreeConfig() {
     echo "👩‍💻 no .bru-run.yml at .claude/worktrees/${worktreeSlug}" >&2
     echo "" >&2
     echo "run this to copy it from the main checkout:" >&2
-    echo "  cp ${mainConfigFile} \\" >&2
+    echo "  cp ${checkoutRoot}/.bru-run.yml \\" >&2
     echo "     ${worktreeConfigFile}" >&2
     return 1
   fi
@@ -353,11 +408,15 @@ bruListWorktrees() {
   local mainResolved namespace
   mainResolved="$(bruLoadProjectConfig "$mainConfigFile")" || return 1
   namespace="${mainResolved%%$'\t'*}"
-  # Same as a run: seeing a project by walking up from $PWD is what makes
-  # it reachable by name later, so --branches has to register it too.
-  bruRegisterProject "$namespace" "$mainConfigFile"
 
-  local rootDir="${mainConfigFile%/*}"
+  local rootDir
+  rootDir="$(bruCheckoutRootOf "$mainConfigFile")"
+
+  # Same as a run: seeing a project by walking up from $PWD is what makes
+  # it reachable by name later, so --branches has to register it too — but
+  # register the checkout root, never a worktree's own config (issue #34).
+  [[ -f "$rootDir/.bru-run.yml" ]] && bruRegisterProject "$namespace" "$rootDir/.bru-run.yml"
+
   local worktreeDir="$rootDir/.claude/worktrees"
 
   if [[ ! -d "$worktreeDir" ]]; then
@@ -395,7 +454,7 @@ bruListWorktrees() {
   if (( missing )); then
     echo ""
     echo "a worktree marked ✗ needs its own config before --branch can use it:"
-    echo "  cp ${mainConfigFile} \\"
+    echo "  cp ${rootDir}/.bru-run.yml \\"
     echo "     ${worktreeDir}/<name>/.bru-run.yml"
   fi
 
