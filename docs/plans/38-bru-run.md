@@ -9,7 +9,7 @@ Worktree: `.claude/worktrees/docs-38-bru-run-setup-flow`
 
 | # | Branch | Branched from | Carries | Status |
 |---|--------|---------------|---------|--------|
-| 1 | `docs/38-bru-run-setup-flow` | `main` | Everything | in progress |
+| 1 | `docs/38-bru-run-setup-flow` | `main` | Everything | done |
 
 ## What is wrong
 
