@@ -114,7 +114,17 @@ if [[ "$1" == "init" ]]; then
     fi
   } > "$PWD/.bru-run.yml"
 
+  bruRegisterProject "$namespace" "$PWD/.bru-run.yml"
+
   echo "👩‍💻 wrote $PWD/.bru-run.yml"
+  echo "👩‍💻 registered '$namespace' — '-p $namespace' works from anywhere now"
+  echo ""
+  echo "next:"
+  echo "  1. create $collection/ and $collection/environments/<env>.bru"
+  echo "  2. run 'bru-run <request> --env <env>' once — it creates"
+  echo "     ~/.bru-run/$namespace/<env>.bru with an empty slot per secret"
+  echo "  3. fill in the values in that file"
+  echo "  4. run the same command again for the real request"
   exit 0
 fi
 
