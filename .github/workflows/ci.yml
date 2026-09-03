@@ -10,11 +10,12 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 
@@ -22,7 +23,4 @@ jobs:
         run: shellcheck -s bash bin/bru-run lib/bru-run.sh
 
       - name: smoke test
-        run: |
-          cd examples/pompom-time
-          ../../bin/bru-run --list
-          ../../bin/bru-run --envs
+        run: npm run smoke
