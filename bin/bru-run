@@ -67,14 +67,14 @@ CROSS-PROJECT
                           have a .bru-run.yml
 
 SETUP
-  init                    write a .bru-run.yml in the current directory
+  init                    write a .bru-run.yml here and register the project
 
 More: README.md, skill/SKILL.md
 EOF
   exit 0
 fi
 
-# `bru-run init` — write a .bru-run.yml in the current directory.
+# `bru-run init` — write a .bru-run.yml in the current directory and register it.
 if [[ "$1" == "init" ]]; then
   if [[ -f "$PWD/.bru-run.yml" ]]; then
     echo "👩‍💻 .bru-run.yml already exists here" >&2
@@ -114,15 +114,21 @@ if [[ "$1" == "init" ]]; then
     fi
   } > "$PWD/.bru-run.yml"
 
-  bruRegisterProject "$namespace" "$PWD/.bru-run.yml"
-
   echo "👩‍💻 wrote $PWD/.bru-run.yml"
-  echo "👩‍💻 registered '$namespace' — '-p $namespace' works from anywhere now"
+
+  if bruRegisterProject "$namespace" "$PWD/.bru-run.yml"; then
+    echo "👩‍💻 registered '$namespace' — '-p $namespace' works from anywhere now"
+  else
+    echo "👩‍💻 note: could not register '$namespace' — run bru-run from inside this dir once" >&2
+  fi
+
   echo ""
   echo "next:"
+  # Keep these four steps in sync with the "First run" section of README.md.
   echo "  1. create $collection/ and $collection/environments/<env>.bru"
   echo "  2. run 'bru-run <request> --env <env>' once — it creates"
-  echo "     ~/.bru-run/$namespace/<env>.bru with an empty slot per secret"
+  echo "     ~/.bru-run/$namespace/<env>.bru with one empty slot per secret,"
+  echo "     then stops"
   echo "  3. fill in the values in that file"
   echo "  4. run the same command again for the real request"
   exit 0

@@ -59,21 +59,22 @@ same way git finds `.git`.
 
 ### First run
 
-The path from `init` to a real request is four steps. Two of them are easy to
-miss:
+`bru-run init` prints the four steps from a fresh config to a real request.
+Two of them are easy to miss:
 
 ```bash
 bru-run init                     # writes .bru-run.yml, registers the project
-# create ./bruno and ./bruno/environments/dev.bru
-bru-run <request> --env dev      # creates ~/.bru-run/my-project/dev.bru with
-                                 #   one empty slot per secret, then stops
-# fill in the values in that file
-bru-run <request> --env dev      # the real request
+
+# 1. create ./bruno/ and ./bruno/environments/dev.bru
+bru-run <request> --env dev      # 2. creates ~/.bru-run/my-project/dev.bru with one
+                                 #    empty slot per secret, then stops
+# 3. fill in the values in that file
+bru-run <request> --env dev      # 4. run the same command again for the real request
 ```
 
 Secrets live under `env_helper` (`~/.bru-run/<namespace>/` by default), never
-in the repo. `bru-run` creates the `<env>.bru` file the first time you run an
-environment that has none yet — it starts empty and you fill it in.
+in the repo. Step 2 only creates the file when the environment declares
+secrets; an environment with none runs straight away.
 
 ### Running against a git worktree
 
