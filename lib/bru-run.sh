@@ -531,6 +531,14 @@ bruEnsureEnvFile() {
     return 1
   fi
 
+  # A helper file already here means someone filled it in (or a race created
+  # it since the caller looked). Never truncate it — let the caller pick it
+  # up on the next run.
+  [[ -e "$envFile" ]] && return 0
+
+  # "no secrets" is only as reliable as bruSecretKeys, which parses Bruno's
+  # multi-line `vars:secret [` block. A single-line or CRLF env file would
+  # read as zero keys and this env would run with blank auth — see #45.
   local secretKeys
   secretKeys="$(bruSecretKeys "$collection/environments/$envName.bru")"
   if [[ -z "$secretKeys" ]]; then
@@ -538,7 +546,8 @@ bruEnsureEnvFile() {
     return 0
   fi
 
-  mkdir -p "$envHelper" && chmod 700 "$envHelper"
+  mkdir -p "$envHelper" || { echo "👩‍💻 could not create $envHelper" >&2; return 1; }
+  chmod 700 "$envHelper"
 
   {
     echo "vars {"
