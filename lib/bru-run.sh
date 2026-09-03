@@ -510,15 +510,17 @@ bruAllSecretKeys() {
   done | sort -u
 }
 
-# Create a project's env_helper directory and a placeholder env file the
-# first time a requested environment is missing everywhere. Secrets never
-# live inside a versioned repo — not even gitignored — so the first run
-# always has to create this file outside of one.
+# Decide what to do about a requested environment that has no helper file
+# yet. Secrets never live inside a versioned repo — not even gitignored — so
+# any secret value has to come from a file outside one.
 #
-# Only auto-creates when envName is a real environment (has a
-# collection/environments/<envName>.bru) but is just missing its secrets
-# file. A typo'd name (e.g. --env dve) is not silently turned into a new
-# placeholder — that hides the real env names instead of showing them.
+# Return codes tell the caller how to proceed:
+#   0  — nothing to fill in; run against the collection env with `--env`
+#   1  — stop the run: either the stub was just created and needs values, or
+#        the name is not a real environment
+#
+# A typo'd name (e.g. --env dve) is not turned into a new placeholder — that
+# would hide the real env names instead of showing them.
 bruEnsureEnvFile() {
   local collection="$1" envHelper="$2" envName="$3"
   local envFile="$envHelper/$envName.bru"
@@ -529,12 +531,18 @@ bruEnsureEnvFile() {
     return 1
   fi
 
+  local secretKeys
+  secretKeys="$(bruSecretKeys "$collection/environments/$envName.bru")"
+  if [[ -z "$secretKeys" ]]; then
+    echo "👩‍💻 using collection env: $envName (no secrets declared)"
+    return 0
+  fi
+
   mkdir -p "$envHelper" && chmod 700 "$envHelper"
 
   {
     echo "vars {"
-    bruSecretKeys "$collection/environments/$envName.bru" \
-      | while read -r key; do echo "  ${key}: "; done
+    printf '%s\n' "$secretKeys" | while read -r key; do echo "  ${key}: "; done
     echo "}"
   } > "$envFile"
   chmod 600 "$envFile"
@@ -1262,13 +1270,13 @@ bruRun() {
     if [[ -f "$envFile" ]]; then
       echo "👩‍💻 using project env: $env ($envFile)"
       bruArgs+=(--env-file "$envFile")
-    elif [[ -f "$collection/environments/$env.bru" ]]; then
-      echo "👩‍💻 using collection env: $env (secrets will be empty)"
+    else
+      # No helper file. bruEnsureEnvFile creates the stub and stops (return
+      # 1) when the env declares secrets, or clears us to run against the
+      # collection env (return 0) when it declares none.
+      bruEnsureEnvFile "$collection" "$envHelper" "$env" || return 1
       bruArgs+=(--env "$env")
       envFile=""
-    else
-      bruEnsureEnvFile "$collection" "$envHelper" "$env"
-      return 1
     fi
   fi
 
