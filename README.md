@@ -37,13 +37,16 @@ physically isn't in the tree can't leak through git at all).
 
 ## Setup
 
-Inside a project with a Bruno collection:
+Run this at the root of the project the Bruno collection belongs to. The
+collection does not have to exist yet — `init` is also how you start a fresh
+one:
 
 ```bash
 bru-run init
 ```
 
-This writes a `.bru-run.yml` at the project root:
+It writes a `.bru-run.yml` at the project root and registers the project, so
+`-p my-project` works from anywhere right away:
 
 ```yaml
 namespace: my-project
@@ -51,9 +54,27 @@ collection: ./bruno
 env_helper: ~/.bru-run/my-project
 ```
 
-From then on, `bru-run` finds this config by walking up from wherever it's
-run, the same way git finds `.git`. From outside the project:
-`bru-run --project my-project ...` (or `-p my-project`).
+`bru-run` also finds this config by walking up from wherever it's run, the
+same way git finds `.git`.
+
+### First run
+
+`bru-run init` prints the four steps from a fresh config to a real request.
+Two of them are easy to miss:
+
+```bash
+bru-run init                     # writes .bru-run.yml, registers the project
+
+# 1. create ./bruno/ and ./bruno/environments/dev.bru
+bru-run <request> --env dev      # 2. creates ~/.bru-run/my-project/dev.bru with one
+                                 #    empty slot per secret, then stops
+# 3. fill in the values in that file
+bru-run <request> --env dev      # 4. run the same command again for the real request
+```
+
+Secrets live under `env_helper` (`~/.bru-run/<namespace>/` by default), never
+in the repo. Step 2 only creates the file when the environment declares
+secrets; an environment with none runs straight away.
 
 ### Running against a git worktree
 
