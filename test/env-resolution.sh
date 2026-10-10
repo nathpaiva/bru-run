@@ -26,7 +26,7 @@ mode_of() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; }
 
 # --- scratch collection --------------------------------------------------------
 
-WORK="$(mktemp -d -t bru-env-test)"
+WORK="$(mktemp -d -t 'bru-env-test.XXXXXX')"
 trap 'rm -rf "$WORK"' EXIT
 
 COL="$WORK/collection"
