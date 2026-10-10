@@ -490,8 +490,10 @@ bruListEnvNames() {
 #   - multi-line — one key per line, the form Bruno's own serializer writes
 #   - single-line — `vars:secret [a, b]`, only ever from a hand edit
 #   - CRLF line endings — also only from a hand edit
-#   - a `~`-disabled key (Bruno's own "turned off" prefix) — kept, tilde
-#     stripped, so it still matches its real name for secret masking
+#   - a `~`-disabled key (Bruno's own "turned off" prefix) — kept as-is,
+#     tilde and all. Bruno won't send a disabled var, so the stub this
+#     feeds should not turn it back on by stripping the mark. A caller that
+#     only wants it for name matching (bruAllSecretKeys) strips it itself.
 # Single-line and CRLF used to read as zero keys, which let a run go out
 # with blank auth — the exact failure #43 removed. See #45.
 #
@@ -529,9 +531,7 @@ bruSecretKeys() {
       n = split(buf, a, /[ \t,]+/)
       printed = 0
       for (i = 1; i <= n; i++) {
-        k = a[i]
-        sub(/^~/, "", k)
-        if (length(k)) { print k; printed = 1 }
+        if (length(a[i])) { print a[i]; printed = 1 }
       }
       if (sawOpen && !printed) exit 2   # e.g. vars:secret [ ] — present but empty
     }
@@ -541,16 +541,39 @@ bruSecretKeys() {
 # Union of every vars:secret key across all of a collection's environment
 # files. --set patches a request before an environment is chosen, so the
 # masking decision cannot depend on which one — a key that is secret in any
-# environment is masked in the --set output regardless.
+# environment is masked in the --set output regardless. Strips a `~`
+# disabled-marker here, since this is about matching the key's real name,
+# not about writing a stub — see bruSecretKeys.
 bruAllSecretKeys() {
   local collection="$1"
   local files
   mapfile -t files < <( cd "$collection" && find environments -name '*.bru' 2>/dev/null | sort )
-  local f
+  local f out rc
   for f in "${files[@]}"; do
     [[ -z "$f" ]] && continue
-    bruSecretKeys "$collection/$f"
-  done | sort -u
+    out="$(bruSecretKeys "$collection/$f")"
+    rc=$?
+    if (( rc == 2 )); then
+      echo "👩‍💻 $collection/$f: vars:secret present but unreadable — its keys are not masked in --set output" >&2
+    fi
+    [[ -n "$out" ]] && printf '%s\n' "$out"
+  done | sed 's/^~//' | sort -u
+}
+
+# Lock down $BRU_RUN_SECRETS_ROOT to 700, but only when this project's
+# env_helper actually lives under it — a project with its own env_helper
+# somewhere else never touches it. Call this on every `--env` use, not only
+# when bruEnsureEnvFile runs: an install from before this existed has a
+# helper file already filled in, so bruRun's own `-f` check short-circuits
+# and bruEnsureEnvFile is never called for it again. Without a call site
+# outside that function, its root would stay at the old umask forever.
+# `umask 077` on the create closes the window between mkdir and chmod. See
+# #45.
+bruTightenSecretsRoot() {
+  local envHelper="$1"
+  [[ "$envHelper" == "$BRU_RUN_SECRETS_ROOT"/* ]] || return 0
+  ( umask 077; mkdir -p "$BRU_RUN_SECRETS_ROOT" ) 2>/dev/null
+  chmod 700 "$BRU_RUN_SECRETS_ROOT" 2>/dev/null
 }
 
 # Decide what to do about a requested environment that has no helper file
@@ -574,13 +597,7 @@ bruEnsureEnvFile() {
     return 1
   fi
 
-  # Tighten on every call, not only when a stub gets written — an install
-  # from before this fix left $BRU_RUN_SECRETS_ROOT at the default umask
-  # (755) forever, since nothing ever touched it again. `umask 077` makes
-  # the create itself start at 700, closing the window between mkdir and
-  # chmod. Values are 600 regardless; this is about the listing, not them.
-  ( umask 077; mkdir -p "$BRU_RUN_SECRETS_ROOT" ) 2>/dev/null
-  chmod 700 "$BRU_RUN_SECRETS_ROOT" 2>/dev/null
+  bruTightenSecretsRoot "$envHelper"
   ( umask 077; mkdir -p "$envHelper" ) || {
     echo "👩‍💻 could not create $envHelper" >&2
     return 1
@@ -728,7 +745,7 @@ bruWithEnvLock() {
     sleep 0.1
     (( waited += 1 ))
     if (( waited > 100 )); then
-      echo "👩‍💻 env file is busy, skipped saving variables" >&2
+      echo "👩‍💻 env file is busy, try again" >&2
       return 1
     fi
   done
@@ -1357,6 +1374,9 @@ bruRun() {
   local envFile=""
   if [[ -n "$env" ]]; then
     envFile="$envHelper/$env.bru"
+    # Every use, not only a brand-new one — see bruTightenSecretsRoot for
+    # why bruEnsureEnvFile alone does not cover an existing install.
+    bruTightenSecretsRoot "$envHelper"
     if [[ ! -f "$envFile" ]]; then
       # No helper file (yet). bruEnsureEnvFile creates the stub and stops
       # (return 1) when the env declares secrets, or clears us to run

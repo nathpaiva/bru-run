@@ -160,5 +160,45 @@ a new RED test:
 - **LOW** — no test covered Bruno's own multi-key, comma-separated,
   multi-line form. Added.
 
-All 17 test cases (11 original + 6 new) pass; `shellcheck` and
-`npm run smoke` stay clean.
+17 test cases (11 original + 6 new) passed before the re-review.
+
+### Round 3 — re-review found #4 not actually fixed, plus a regression
+
+The re-review on `27f55fe` closed 6 of 9: #1, #2, #3, #6, #7, #8, #9 held up.
+Two things did not:
+
+- **#4 was not fixed for the case it described.** `bruRun` only calls
+  `bruEnsureEnvFile` when the helper file does not exist yet. An install
+  from before this PR has its helper files already filled in, so that call
+  never happens again for them — the root stayed at the old mode forever,
+  exactly what #4 reported. The new test only exercised the
+  no-helper-yet path, so it passed without covering the real case.
+- **New regression** — the fix for #4 dropped the `envHelper` path-prefix
+  guard, so every project's `bruEnsureEnvFile` call now creates and chmods
+  `$BRU_RUN_SECRETS_ROOT` even when that project's own `env_helper:` is
+  somewhere else entirely and never uses it.
+
+Fixed by pulling the root-tightening out into its own `bruTightenSecretsRoot`
+helper, called from two places: inside `bruEnsureEnvFile` (unchanged
+behavior) and from `bruRun` itself, before the `-f` check, every time `--env`
+is used — covering an existing install without `bruEnsureEnvFile` ever
+running. The path-prefix guard moved into the helper, so it still applies
+either way.
+
+Also asked to fix the three LOW findings from that same round instead of
+deferring them:
+
+- `bruWithEnvLock`'s timeout message said "skipped saving variables" even on
+  the bootstrap path, where nothing is being saved. Changed to a neutral
+  "env file is busy, try again".
+- A Bruno-disabled (`~`) secret had its tilde stripped by `bruSecretKeys`
+  itself, so the stub it feeds asked for a value Bruno would never send —
+  silently re-enabling something the collection author turned off. Fixed:
+  `bruSecretKeys` now keeps the `~` as-is; only `bruAllSecretKeys` (used for
+  `--set` masking, where only the name matters) strips it.
+- An unclosed block now makes that one env's keys drop out of
+  `bruAllSecretKeys`'s masking union with no signal. Fixed:
+  `bruAllSecretKeys` reads `bruSecretKeys`'s exit code per file and warns on
+  stderr when a file's `vars:secret` could not be read.
+
+21 test cases (17 + 4 new) pass; `shellcheck` and `npm run smoke` stay clean.

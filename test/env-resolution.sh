@@ -102,10 +102,23 @@ else
 fi
 
 got="$(bruSecretKeys "$COL/environments/disabled.bru")"
-if [[ "$got" == $'token\napi_key' ]]; then
-  ok "bruSecretKeys: ~-disabled key -> tilde stripped"
+if [[ "$got" == $'~token\napi_key' ]]; then
+  ok "bruSecretKeys: keeps a ~-disabled key as-is (stub must not re-enable it)"
 else
-  ng "bruSecretKeys: ~-disabled key -> tilde stripped" "got: '$got'"
+  ng "bruSecretKeys: keeps a ~-disabled key as-is (stub must not re-enable it)" "got: '$got'"
+fi
+
+got="$(bruAllSecretKeys "$COL" 2>/dev/null)"
+warn="$(bruAllSecretKeys "$COL" 2>&1 1>/dev/null)"
+if [[ "$got" == $'a\napi_key\nb\ntoken' ]]; then
+  ok "bruAllSecretKeys: strips ~ for masking, union across every env file"
+else
+  ng "bruAllSecretKeys: strips ~ for masking, union across every env file" "got: '$got'"
+fi
+if [[ "$warn" == *"unreadable"* ]]; then
+  ok "bruAllSecretKeys: warns when a file's vars:secret could not be read"
+else
+  ng "bruAllSecretKeys: warns when a file's vars:secret could not be read" "warn: '$warn'"
 fi
 
 # --- bruEnsureEnvFile ------------------------------------------------------------
@@ -207,6 +220,32 @@ if [[ "$(mode_of "$BRU_RUN_SECRETS_ROOT")" == "700" ]]; then
   ok "bruEnsureEnvFile: tightens \$BRU_RUN_SECRETS_ROOT even on the no-secrets path"
 else
   ng "bruEnsureEnvFile: tightens \$BRU_RUN_SECRETS_ROOT even on the no-secrets path" "got: $(mode_of "$BRU_RUN_SECRETS_ROOT")"
+fi
+
+# --- bruTightenSecretsRoot ----------------------------------------------------
+
+new_root existinginstall
+# Simulate an install from before this fix: the helper file is already
+# filled in, so bruRun's own -f check short-circuits and bruEnsureEnvFile is
+# never called for it again. bruRun calls this directly instead, every time
+# --env is used, not only when a stub gets written.
+mkdir -p "$HELPER"
+printf 'api_key: already-filled-in\n' > "$HELPER/dev.bru"
+bruTightenSecretsRoot "$HELPER"
+if [[ "$(mode_of "$BRU_RUN_SECRETS_ROOT")" == "700" ]]; then
+  ok "bruTightenSecretsRoot: tightens an existing install's root with no stub write"
+else
+  ng "bruTightenSecretsRoot: tightens an existing install's root with no stub write" "got: $(mode_of "$BRU_RUN_SECRETS_ROOT")"
+fi
+
+new_root unrelatedproject
+OTHER_HELPER="$WORK/custom-helper-not-under-root"
+rm -rf "$BRU_RUN_SECRETS_ROOT"   # this "project" never uses the default root
+bruTightenSecretsRoot "$OTHER_HELPER"
+if [[ ! -e "$BRU_RUN_SECRETS_ROOT" ]]; then
+  ok "bruTightenSecretsRoot: leaves an unrelated \$BRU_RUN_SECRETS_ROOT untouched"
+else
+  ng "bruTightenSecretsRoot: leaves an unrelated \$BRU_RUN_SECRETS_ROOT untouched" "root now exists"
 fi
 
 # --- report -----------------------------------------------------------------
