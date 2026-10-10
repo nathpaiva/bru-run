@@ -10,7 +10,7 @@ Worktree: `.claude/worktrees/fix-45-bru-run-harden-env-resolution`
 
 | # | Branch | Branched from | Carries | Status |
 |---|--------|---------------|---------|--------|
-| 1 | `fix/45-bru-run-harden-env-resolution` | `main` | Everything | in progress |
+| 1 | `fix/45-bru-run-harden-env-resolution` | `main` | Everything | done |
 
 One branch, one PR. All changes are in `lib/bru-run.sh`, a new `test/` script,
 `package.json`, and `.github/workflows/ci.yml`.
@@ -101,3 +101,18 @@ confirm cases 6, 7, 8 fail. Apply the changes, confirm all pass.
 ## Project skills
 
 - `superpowers:test-driven-development` for the `lib/bru-run.sh` behavior changes.
+
+### What shipped on branch 1
+
+Followed the plan as written, with three small differences Nath approved
+after an inline review (no reviewer agent dispatched — the project's real
+review gate is the cross-session `code-review` session, on the PR):
+
+- `vars:secret []` (present but empty) now also triggers the Part 3 loud
+  failure, not just a `vars:secret [` block that fails to parse. This is a
+  deliberate choice, not an edge case missed by the parser.
+- `prepublishOnly` became `npm run smoke && npm test` — beyond the plan's
+  "add a test script + CI step", so a broken env-resolution path can't ship.
+- No test added for a custom `env_helper` outside `$BRU_RUN_SECRETS_ROOT`
+  (Part 4's `if` guard has a false branch nothing exercises). Known gap, low
+  risk — that branch's behavior is unchanged from before this fix.
