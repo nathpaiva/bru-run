@@ -485,13 +485,39 @@ bruListEnvNames() {
 # per line — those are the ones whose real value has to live outside the
 # versioned collection. Plain vars {} entries already carry a usable value in
 # the collection itself.
+#
+# Handles the three shapes a `.bru` env file turns up in:
+#   - multi-line — one key per line, the form Bruno's own serializer writes
+#   - single-line — `vars:secret [a, b]`, only ever from a hand edit
+#   - CRLF line endings — also only from a hand edit
+# The last two used to read as zero keys, which let a run go out with blank
+# auth — the exact failure #43 removed. See #45.
 bruSecretKeys() {
   local envFile="$1"
   [[ -f "$envFile" ]] || return 0
   awk '
-    /^[ \t]*vars:secret[ \t]*\[/ { inSecret = 1; next }
-    inSecret && /\]/ { inSecret = 0; next }
-    inSecret { gsub(/^[ \t]*|[ \t]*,?[ \t]*$/, ""); if (length($0)) print }
+    { sub(/\r$/, "") }
+    !inBlock && /^[ \t]*vars:secret[ \t]*\[/ {
+      s = $0
+      sub(/^[ \t]*vars:secret[ \t]*\[/, "", s)   # everything after the [
+      if (s ~ /\]/) {
+        sub(/\].*/, "", s)                       # single-line: content before ]
+      } else {
+        inBlock = 1
+      }
+      buf = buf " " s
+      next
+    }
+    inBlock {
+      s = $0
+      if (s ~ /\]/) { sub(/\].*/, "", s); inBlock = 0 }
+      buf = buf " " s
+      next
+    }
+    END {
+      n = split(buf, a, /[ \t,]+/)
+      for (i = 1; i <= n; i++) if (length(a[i])) print a[i]
+    }
   ' "$envFile"
 }
 
@@ -536,22 +562,38 @@ bruEnsureEnvFile() {
   # up on the next run.
   [[ -e "$envFile" ]] && return 0
 
-  # "no secrets" is only as reliable as bruSecretKeys, which parses Bruno's
-  # multi-line `vars:secret [` block. A single-line or CRLF env file would
-  # read as zero keys and this env would run with blank auth — see #45.
+  local envInCollection="$collection/environments/$envName.bru"
   local secretKeys
-  secretKeys="$(bruSecretKeys "$collection/environments/$envName.bru")"
+  secretKeys="$(bruSecretKeys "$envInCollection")"
+
+  # bruSecretKeys now reads the single-line and CRLF forms too, but a broken
+  # hand edit can still leave a `vars:secret [` that parses to nothing. Running
+  # would send blank auth — the exact failure #43 removed. Stop instead. See #45.
+  if [[ -z "$secretKeys" ]] \
+     && grep -qE '^[[:space:]]*vars:secret[[:space:]]*\[' "$envInCollection"; then
+    echo "👩‍💻 '$envName' declares vars:secret but no keys could be read from it" >&2
+    echo "👩‍💻 check $envInCollection — refusing to run with blank auth" >&2
+    return 1
+  fi
+
   if [[ -z "$secretKeys" ]]; then
     echo "👩‍💻 using collection env: $envName (no secrets declared)"
     return 0
   fi
 
+  # `mkdir -p "$envHelper"` also creates $BRU_RUN_SECRETS_ROOT itself, at the
+  # default umask (755) — values are 600 but the layout is world-listable.
+  # Tighten the root when the helper lives under it (the default case). A
+  # custom `env_helper:` elsewhere gets its own 700 on the next line.
+  if [[ "$envHelper" == "$BRU_RUN_SECRETS_ROOT"/* ]]; then
+    mkdir -p "$BRU_RUN_SECRETS_ROOT" && chmod 700 "$BRU_RUN_SECRETS_ROOT"
+  fi
   mkdir -p "$envHelper" || { echo "👩‍💻 could not create $envHelper" >&2; return 1; }
   chmod 700 "$envHelper"
 
   {
     echo "vars {"
-    printf '%s\n' "$secretKeys" | while read -r key; do echo "  ${key}: "; done
+    printf '%s\n' "$secretKeys" | while read -r key; do echo "  ${key}:"; done
     echo "}"
   } > "$envFile"
   chmod 600 "$envFile"
