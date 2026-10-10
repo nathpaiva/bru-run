@@ -52,6 +52,18 @@ printf 'vars:secret [\r\n  api_key\r\n]\r\n' \
 printf 'vars {\n  base_url: https://x.invalid\n}\n\nvars:secret [\n]\n' \
   > "$COL/environments/empty.bru"
 
+# multi-line with commas — the shape Bruno's serializer writes for 2+ keys
+printf 'vars:secret [\n  api_key,\n  token\n]\n' \
+  > "$COL/environments/multi.bru"
+
+# unclosed vars:secret block — a hand-edited file missing the closing ]
+printf 'vars:secret [\n  api_key\n\nvars {\n  base_url: https://x.invalid\n}\n' \
+  > "$COL/environments/unclosed.bru"
+
+# a secret disabled Bruno-style (~ prefix) alongside an active one
+printf 'vars:secret [\n  ~token\n  api_key\n]\n' \
+  > "$COL/environments/disabled.bru"
+
 # --- bruSecretKeys -----------------------------------------------------------
 
 got="$(bruSecretKeys "$COL/environments/dev.bru")"
@@ -73,6 +85,27 @@ if [[ "$got" == "api_key" ]]; then
   ok "bruSecretKeys: CRLF file -> api_key with no carriage return"
 else
   ng "bruSecretKeys: CRLF file -> api_key with no carriage return" "got: $(printf '%q' "$got")"
+fi
+
+got="$(bruSecretKeys "$COL/environments/multi.bru")"
+if [[ "$got" == $'api_key\ntoken' ]]; then
+  ok "bruSecretKeys: multi-line with commas -> api_key, token"
+else
+  ng "bruSecretKeys: multi-line with commas -> api_key, token" "got: '$got'"
+fi
+
+got="$(bruSecretKeys "$COL/environments/unclosed.bru")"; rc=$?
+if [[ -z "$got" && $rc -eq 2 ]]; then
+  ok "bruSecretKeys: unclosed block -> no keys, exit 2 (not the rest of the file)"
+else
+  ng "bruSecretKeys: unclosed block -> no keys, exit 2 (not the rest of the file)" "rc=$rc, got: '$got'"
+fi
+
+got="$(bruSecretKeys "$COL/environments/disabled.bru")"
+if [[ "$got" == $'token\napi_key' ]]; then
+  ok "bruSecretKeys: ~-disabled key -> tilde stripped"
+else
+  ng "bruSecretKeys: ~-disabled key -> tilde stripped" "got: '$got'"
 fi
 
 # --- bruEnsureEnvFile ------------------------------------------------------------
@@ -146,6 +179,34 @@ if [[ $rc -eq 1 ]]; then
   ok "bruEnsureEnvFile: empty vars:secret block -> return 1 (no blank-auth run)"
 else
   ng "bruEnsureEnvFile: empty vars:secret block -> return 1 (no blank-auth run)" "rc=$rc"
+fi
+
+new_root unclosedblock
+rc=0; bruEnsureEnvFile "$COL" "$HELPER" "unclosed" >/dev/null 2>&1 || rc=$?
+if [[ $rc -eq 1 && ! -e "$HELPER/unclosed.bru" ]]; then
+  ok "bruEnsureEnvFile: unclosed vars:secret block -> return 1, no garbage stub"
+else
+  ng "bruEnsureEnvFile: unclosed vars:secret block -> return 1, no garbage stub" "rc=$rc"
+fi
+
+new_root isdir
+mkdir -p "$HELPER/dev.bru"   # the helper "file" is actually a directory
+err="$(bruEnsureEnvFile "$COL" "$HELPER" "dev" 2>&1 >/dev/null)"; rc=$?
+if [[ $rc -eq 1 && "$err" == *"not a regular file"* ]]; then
+  ok "bruEnsureEnvFile: helper path is a directory -> return 1, not silent 0"
+else
+  ng "bruEnsureEnvFile: helper path is a directory -> return 1, not silent 0" "rc=$rc, err='$err'"
+fi
+
+new_root retroactiveperms
+# the root was created world-listable by new_root (chmod 755) above — this
+# path (no secrets declared) wrote no stub before this fix, so it never
+# reached the chmod 700 call.
+bruEnsureEnvFile "$COL" "$HELPER" "plain" >/dev/null 2>&1
+if [[ "$(mode_of "$BRU_RUN_SECRETS_ROOT")" == "700" ]]; then
+  ok "bruEnsureEnvFile: tightens \$BRU_RUN_SECRETS_ROOT even on the no-secrets path"
+else
+  ng "bruEnsureEnvFile: tightens \$BRU_RUN_SECRETS_ROOT even on the no-secrets path" "got: $(mode_of "$BRU_RUN_SECRETS_ROOT")"
 fi
 
 # --- report -----------------------------------------------------------------

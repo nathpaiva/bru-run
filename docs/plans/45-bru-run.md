@@ -116,3 +116,49 @@ review gate is the cross-session `code-review` session, on the PR):
 - No test added for a custom `env_helper` outside `$BRU_RUN_SECRETS_ROOT`
   (Part 4's `if` guard has a false branch nothing exercises). Known gap, low
   risk — that branch's behavior is unchanged from before this fix.
+
+### Round 2 — the `env-resolution-code-review` session's findings on PR #46
+
+That session ran `/code-review` (the superpowers plugin) against the PR and
+found 9 issues, 3 of them real correctness/secret-leak bugs. Nath asked for
+all 9 fixed before merge. Each was reproduced locally first, then fixed with
+a new RED test:
+
+- **HIGH** — `bruEnsureEnvFile` checked `-e`, `bruRun` checked `-f`. A
+  directory at the helper path, or a file created between the two checks,
+  returned 0 and ran with blank auth. Fixed: the existence check now lives
+  inside `bruEnsureEnvFileLocked` (under `bruWithEnvLock`), rejects anything
+  that is not a regular file, and `bruRun` re-checks `-f` after calling
+  `bruEnsureEnvFile` instead of trusting the branch it took.
+- **HIGH** — a `vars:secret [` with no closing `]` fed the rest of the file
+  into the key list. Fixed: `bruSecretKeys` now exits 2 (not 0 with empty
+  output) when the block was opened but never closed, or parsed to zero
+  keys either way — one signal, not a second grep guessing at the same thing.
+- **HIGH** — a Bruno-disabled key (`~token`) kept its `~`, so masking by name
+  (`bruAllSecretKeys`) missed it and `--set token=...` could print the real
+  value for any secret name outside the hardcoded heuristic list. Fixed:
+  `bruSecretKeys` strips a leading `~` from every key.
+- **MEDIUM** — `$BRU_RUN_SECRETS_ROOT` only got `chmod 700` on the
+  stub-write path, so an existing install stayed `755` forever, and the
+  `mkdir`/`chmod` pair left a brief window at the old mode. Fixed: tightened
+  on every `bruEnsureEnvFile` call (not gated on a path-prefix check
+  anymore), and created with `umask 077` so it is never briefly world-listable.
+- **MEDIUM** — chmod-ing a directory bru-run did not create, if
+  `BRU_RUN_SECRETS_ROOT` pointed somewhere repurposed. Not changed: pointing
+  that variable at a directory is telling bru-run "this is my secrets root",
+  and 700 is the correct mode for that regardless of who else wrote to it
+  first — documented as a known tradeoff rather than coded around.
+- **MEDIUM** — the stub write raced two concurrent `bru-run` invocations on
+  the same brand-new env, against `bruWithEnvLock`'s own stated job. Fixed:
+  the whole existence-check-then-write sequence now runs under
+  `bruWithEnvLock`.
+- **LOW** — the loud-failure guard re-implemented `bruSecretKeys`'s own
+  `vars:secret [` detection in a second regex (grep vs. awk), so the two
+  could drift. Fixed: removed, now reads `bruSecretKeys`'s exit code instead.
+- **LOW** — `CLAUDE.md`'s "Testing changes" section said "there's no test
+  suite". Fixed — points at `test/env-resolution.sh` / `npm test` now.
+- **LOW** — no test covered Bruno's own multi-key, comma-separated,
+  multi-line form. Added.
+
+All 17 test cases (11 original + 6 new) pass; `shellcheck` and
+`npm run smoke` stay clean.

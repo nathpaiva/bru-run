@@ -486,22 +486,32 @@ bruListEnvNames() {
 # versioned collection. Plain vars {} entries already carry a usable value in
 # the collection itself.
 #
-# Handles the three shapes a `.bru` env file turns up in:
+# Handles the shapes a `.bru` env file turns up in:
 #   - multi-line — one key per line, the form Bruno's own serializer writes
 #   - single-line — `vars:secret [a, b]`, only ever from a hand edit
 #   - CRLF line endings — also only from a hand edit
-# The last two used to read as zero keys, which let a run go out with blank
-# auth — the exact failure #43 removed. See #45.
+#   - a `~`-disabled key (Bruno's own "turned off" prefix) — kept, tilde
+#     stripped, so it still matches its real name for secret masking
+# Single-line and CRLF used to read as zero keys, which let a run go out
+# with blank auth — the exact failure #43 removed. See #45.
+#
+# Exit status doubles as a signal, not just the printed keys:
+#   0 — normal: no vars:secret section (nothing printed), or a real list
+#   2 — a vars:secret section is present but nothing could be read from it
+#       (missing closing `]`, or an empty block) — the caller must not read
+#       this as "no secrets declared"
 bruSecretKeys() {
   local envFile="$1"
   [[ -f "$envFile" ]] || return 0
   awk '
     { sub(/\r$/, "") }
     !inBlock && /^[ \t]*vars:secret[ \t]*\[/ {
+      sawOpen = 1
       s = $0
       sub(/^[ \t]*vars:secret[ \t]*\[/, "", s)   # everything after the [
       if (s ~ /\]/) {
         sub(/\].*/, "", s)                       # single-line: content before ]
+        closed = 1
       } else {
         inBlock = 1
       }
@@ -510,13 +520,20 @@ bruSecretKeys() {
     }
     inBlock {
       s = $0
-      if (s ~ /\]/) { sub(/\].*/, "", s); inBlock = 0 }
+      if (s ~ /\]/) { sub(/\].*/, "", s); inBlock = 0; closed = 1 }
       buf = buf " " s
       next
     }
     END {
+      if (sawOpen && !closed) exit 2   # missing ] — do not print the rest of the file
       n = split(buf, a, /[ \t,]+/)
-      for (i = 1; i <= n; i++) if (length(a[i])) print a[i]
+      printed = 0
+      for (i = 1; i <= n; i++) {
+        k = a[i]
+        sub(/^~/, "", k)
+        if (length(k)) { print k; printed = 1 }
+      }
+      if (sawOpen && !printed) exit 2   # e.g. vars:secret [ ] — present but empty
     }
   ' "$envFile"
 }
@@ -557,20 +574,52 @@ bruEnsureEnvFile() {
     return 1
   fi
 
-  # A helper file already here means someone filled it in (or a race created
-  # it since the caller looked). Never truncate it — let the caller pick it
-  # up on the next run.
-  [[ -e "$envFile" ]] && return 0
+  # Tighten on every call, not only when a stub gets written — an install
+  # from before this fix left $BRU_RUN_SECRETS_ROOT at the default umask
+  # (755) forever, since nothing ever touched it again. `umask 077` makes
+  # the create itself start at 700, closing the window between mkdir and
+  # chmod. Values are 600 regardless; this is about the listing, not them.
+  ( umask 077; mkdir -p "$BRU_RUN_SECRETS_ROOT" ) 2>/dev/null
+  chmod 700 "$BRU_RUN_SECRETS_ROOT" 2>/dev/null
+  ( umask 077; mkdir -p "$envHelper" ) || {
+    echo "👩‍💻 could not create $envHelper" >&2
+    return 1
+  }
+  chmod 700 "$envHelper"
+
+  # bruWithEnvLock closes the race between two `bru-run` invocations hitting
+  # a brand-new env at the same time — both would otherwise see no helper
+  # file, and the second one's write could land on top of the first one's,
+  # or (without this) trample a value the user had already started filling
+  # in. mkdir needs envHelper to exist first, hence the block above.
+  bruWithEnvLock "$envFile" bruEnsureEnvFileLocked "$collection" "$envName" "$envFile"
+}
+
+# The part of bruEnsureEnvFile that reads and writes envFile — see the call
+# site above for why this runs inside bruWithEnvLock instead of inline.
+bruEnsureEnvFileLocked() {
+  local collection="$1" envName="$2" envFile="$3"
+
+  if [[ -e "$envFile" ]]; then
+    # A regular file here means someone filled it in (or a race created it
+    # since the caller looked) — never truncate it.
+    [[ -f "$envFile" ]] && return 0
+    # Anything else (a directory, a socket, ...) is not a helper file bru-run
+    # ever wrote. Treating it as "already there" would run with blank auth —
+    # the caller's own -f check would never see it as usable either.
+    echo "👩‍💻 $envFile exists but is not a regular file — remove it and run again" >&2
+    return 1
+  fi
 
   local envInCollection="$collection/environments/$envName.bru"
-  local secretKeys
+  local secretKeys secretKeysStatus
   secretKeys="$(bruSecretKeys "$envInCollection")"
+  secretKeysStatus=$?
 
-  # bruSecretKeys now reads the single-line and CRLF forms too, but a broken
-  # hand edit can still leave a `vars:secret [` that parses to nothing. Running
-  # would send blank auth — the exact failure #43 removed. Stop instead. See #45.
-  if [[ -z "$secretKeys" ]] \
-     && grep -qE '^[[:space:]]*vars:secret[[:space:]]*\[' "$envInCollection"; then
+  # Exit status 2 means a `vars:secret [` section is present but nothing
+  # could be read from it (missing `]`, or an empty block). Running would
+  # send blank auth — the exact failure #43 removed. Stop instead. See #45.
+  if (( secretKeysStatus == 2 )); then
     echo "👩‍💻 '$envName' declares vars:secret but no keys could be read from it" >&2
     echo "👩‍💻 check $envInCollection — refusing to run with blank auth" >&2
     return 1
@@ -580,16 +629,6 @@ bruEnsureEnvFile() {
     echo "👩‍💻 using collection env: $envName (no secrets declared)"
     return 0
   fi
-
-  # `mkdir -p "$envHelper"` also creates $BRU_RUN_SECRETS_ROOT itself, at the
-  # default umask (755) — values are 600 but the layout is world-listable.
-  # Tighten the root when the helper lives under it (the default case). A
-  # custom `env_helper:` elsewhere gets its own 700 on the next line.
-  if [[ "$envHelper" == "$BRU_RUN_SECRETS_ROOT"/* ]]; then
-    mkdir -p "$BRU_RUN_SECRETS_ROOT" && chmod 700 "$BRU_RUN_SECRETS_ROOT"
-  fi
-  mkdir -p "$envHelper" || { echo "👩‍💻 could not create $envHelper" >&2; return 1; }
-  chmod 700 "$envHelper"
 
   {
     echo "vars {"
@@ -1318,14 +1357,19 @@ bruRun() {
   local envFile=""
   if [[ -n "$env" ]]; then
     envFile="$envHelper/$env.bru"
+    if [[ ! -f "$envFile" ]]; then
+      # No helper file (yet). bruEnsureEnvFile creates the stub and stops
+      # (return 1) when the env declares secrets, or clears us to run
+      # against the collection env (return 0) when it declares none.
+      bruEnsureEnvFile "$collection" "$envHelper" "$env" || return 1
+    fi
+    # Re-check rather than trust the branch above: a concurrent run can
+    # create the file between the first check and bruEnsureEnvFile's own
+    # locked check, and that case must use it this run, not "next run".
     if [[ -f "$envFile" ]]; then
       echo "👩‍💻 using project env: $env ($envFile)"
       bruArgs+=(--env-file "$envFile")
     else
-      # No helper file. bruEnsureEnvFile creates the stub and stops (return
-      # 1) when the env declares secrets, or clears us to run against the
-      # collection env (return 0) when it declares none.
-      bruEnsureEnvFile "$collection" "$envHelper" "$env" || return 1
       bruArgs+=(--env "$env")
       envFile=""
     fi
