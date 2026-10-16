@@ -180,6 +180,29 @@ instead of grep. It carries no project-specific rules (like which
 environment is production) — that's for whoever configures a project's own
 skill instance to add.
 
+## Releasing
+
+A pushed `v*` tag runs `.github/workflows/release.yml`. The version bump stays
+a manual step:
+
+```bash
+npm version patch --no-git-tag-version   # or minor / major
+git commit -am "chore: bump version to X.Y.Z"
+git tag vX.Y.Z
+git push origin main vX.Y.Z
+```
+
+The workflow then runs the CI checks, publishes to npm, creates the GitHub
+Release, and opens a PR on `nathpaiva/homebrew-tap` with the new `url` and
+`sha256`. It stops if the tag does not match the `version` in `package.json`.
+
+It needs two repo secrets:
+
+- `NPM_TOKEN`: an npm token that can publish `bru-run`. npm tokens with
+  write access expire, so a failed npm job may only need a new token.
+- `HOMEBREW_TAP_TOKEN`: a fine-grained token for `nathpaiva/homebrew-tap`
+  only, with read and write access to Contents and Pull requests.
+
 ## Status
 
 Released, `1.0.0`. See [issue #1](https://github.com/nathpaiva/bru-run/issues/1)
