@@ -129,8 +129,13 @@ new locking scheme.
 
 ## Testing changes
 
-There's no test suite — verify by running `bin/bru-run` directly against
-`examples/pompom-time/`:
+`test/env-resolution.sh` (`npm test`) covers env resolution: `bruSecretKeys`
+parsing and `bruEnsureEnvFile`'s bootstrap/lock/permission behavior, offline
+and with no `bru` binary needed. CI runs it on every PR. Add a case there for
+any change to either function.
+
+There's no suite beyond that — verify anything else by running `bin/bru-run`
+directly against `examples/pompom-time/`:
 
 ```bash
 cd examples/pompom-time
